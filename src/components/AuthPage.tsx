@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Droplets, Eye, EyeOff, Lock, Mail, UserRound } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, UserRound } from 'lucide-react';
 import { clearAuthLock, lockSecondsLeft, prepareEmail, prepareName, preparePassword, recordAuthFailure } from '@/lib/authGuard';
 import { stationLogo } from '@/lib/logo';
 import { supabase } from '@/lib/supabase';
@@ -20,11 +20,11 @@ export function AuthLoading() {
 export function AuthPage() {
   const [mode, setMode] = useState<Mode>(readMode);
   const [fullName, setFullName] = useState('');
-  const [stationName, setStationName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -71,16 +71,10 @@ export function AuthPage() {
     const cleanPassword = passwordCheck.password;
 
     let ownerName = '';
-    let station = '';
     if (mode === 'register') {
       const ownerCheck = prepareName(fullName, 'owner name');
       if ('error' in ownerCheck) {
         setError(ownerCheck.error);
-        return;
-      }
-      const stationCheck = prepareName(stationName, 'station name');
-      if ('error' in stationCheck) {
-        setError(stationCheck.error);
         return;
       }
       if (password !== confirmPassword) {
@@ -88,7 +82,6 @@ export function AuthPage() {
         return;
       }
       ownerName = ownerCheck.name;
-      station = stationCheck.name;
     }
 
     setSubmitting(true);
@@ -101,7 +94,6 @@ export function AuthPage() {
             emailRedirectTo: window.location.origin,
             data: {
               full_name: ownerName,
-              station_name: station,
               role: 'owner',
             },
           },
@@ -120,7 +112,7 @@ export function AuthPage() {
           await supabase.from('station_owners').upsert({
             id: data.user.id,
             full_name: ownerName,
-            station_name: station,
+            station_name: 'CRMA Water Refilling Station',
             email: cleanEmail,
           });
         }
@@ -166,20 +158,12 @@ export function AuthPage() {
           {notice && <div className="auth-notice" role="status">{notice}</div>}
 
           {isRegister && (
-            <>
-              <label htmlFor="owner-name">Owner name
-                <span className="auth-input">
-                  <UserRound size={16} />
-                  <input id="owner-name" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Juan Dela Cruz" autoComplete="name" maxLength={80} />
-                </span>
-              </label>
-              <label htmlFor="station-name">Station name
-                <span className="auth-input">
-                  <Droplets size={16} />
-                  <input id="station-name" value={stationName} onChange={(event) => setStationName(event.target.value)} placeholder="CRMA Water Refilling Station" autoComplete="organization" maxLength={80} />
-                </span>
-              </label>
-            </>
+            <label htmlFor="owner-name">Owner name
+              <span className="auth-input">
+                <UserRound size={16} />
+                <input id="owner-name" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Juan Dela Cruz" autoComplete="name" maxLength={80} />
+              </span>
+            </label>
           )}
 
           <label htmlFor="owner-email">Email
@@ -203,7 +187,10 @@ export function AuthPage() {
             <label htmlFor="owner-confirm">Confirm password
               <span className="auth-input">
                 <Lock size={16} />
-                <input id="owner-confirm" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repeat your password" autoComplete="new-password" maxLength={72} />
+                <input id="owner-confirm" type={showConfirmPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repeat your password" autoComplete="new-password" maxLength={72} />
+                <button type="button" className="auth-eye" onClick={() => setShowConfirmPassword((current) => !current)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>
+                  {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
               </span>
             </label>
           )}

@@ -417,7 +417,7 @@ function StationWorkspace({ session }: { session: Session }) {
             </div>
           ) : <button key={label} className={`nav-item ${activeView === label ? 'active' : ''}`} onClick={() => { setActiveView(label); setIsSidebarOpen(false); }}><Icon size={18} /><span>{label}</span>{label === 'POS' && <small>⌘ P</small>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="profile"><div className="avatar">{ownerInitials}</div><div><strong>{ownerName}</strong><span>Station owner</span></div><button aria-label="Log out" onClick={() => { void supabase.auth.signOut(); }}><LogOut size={17} /></button></div></div>
+        <div className="sidebar-bottom"><div className="profile"><div className="avatar">{ownerInitials}</div><div><strong>{ownerName}</strong><span>Station owner</span></div><button className="logout-button" aria-label="Log out" onClick={() => { void supabase.auth.signOut(); }}><LogOut size={17} /><span>Log out</span></button></div></div>
       </aside>
       <main className="main-area">
         <header className="topbar"><button className="mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="Open menu"><Menu size={21} /></button><div className="breadcrumb"><span>Workspace</span><span>/</span><strong>{activeView}</strong></div><div className="topbar-actions"><div className="date-chip"><Gauge size={15} /> {todayLabel}</div><button className="icon-button" aria-label="Low stock alerts" onClick={() => { if (notify.lowStock && lowStockItems.length) setStockAlertOpen(true); }}><Bell size={18} />{notify.lowStock && lowStockItems.length > 0 && <i />}</button><div className="top-avatar">{ownerInitials}</div></div></header>
