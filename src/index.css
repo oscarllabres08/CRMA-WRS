@@ -68,6 +68,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .product-modal input, .product-modal select { display: block; width: 100%; margin-top: 7px; padding: 11px 12px; border: 1px solid #e0e9ef; border-radius: 7px; color: #334a60; font-size: 12px; outline: 0; background: #fff; }
 .product-modal input:focus, .product-modal select:focus { border-color: #61E903; box-shadow: 0 0 0 3px #61E90333; }
 .product-span { grid-column: 1 / -1; }
+.product-modal .points-check { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid #e0e9ef; border-radius: 8px; cursor: pointer; color: #30445b; }
+.product-modal .points-check input { width: 16px; height: 16px; margin: 2px 0 0; padding: 0; flex: 0 0 auto; accent-color: #3d9a12; }
+.product-modal .points-check span { display: block; }
+.product-modal .points-check strong { display: block; color: #1d3047; font-size: 12px; }
+.product-modal .points-check em { display: block; margin-top: 3px; color: #8192a4; font-size: 11px; font-style: normal; font-weight: 600; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .table-toolbar { flex-wrap: wrap; gap: 12px; }
 .inventory-filter { flex: 1 1 240px; flex-wrap: nowrap; justify-content: flex-start; }
@@ -185,6 +190,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .unpaid-button:hover { background: #fff8f0; }
 .unpaid-button:disabled { opacity: .55; }
 .loyalty-block { margin-top: 16px; }
+.loyalty-search { margin-top: 16px; }
+.loyalty-search .search-field { width: min(420px, 100%); }
+.loyalty-search-claim { margin-top: 12px; }
 .loyalty-spotlight { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .loyalty-person strong { display: block; color: #1d3047; font-size: 14px; }
 .points-meta { display: flex; justify-content: space-between; gap: 8px; margin: 10px 0 6px; color: #8192a4; font-size: 11px; }
@@ -249,6 +257,22 @@ html[data-theme="dark"] .history-pay { background: #61E903; color: #213916; }
 .analytics-bars.dense .bar-column span { font-size: 9px; }
 .recent-orders { margin-top: 18px; }
 .recent-orders .show-more { margin-top: 16px; }
+.order-hint { margin: -4px 0 14px; color: #8192a4; font-size: 12px; }
+.orders-table tbody tr.order-row { cursor: pointer; }
+.orders-table tbody tr.order-row:hover { background: #f4fbf0; }
+.orders-table tbody tr.order-row:focus-visible { outline: 2px solid #61E903; outline-offset: -2px; }
+.order-lines { margin-top: 16px; }
+.order-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #edf1f4; }
+.order-line strong { display: block; color: #1d3047; font-size: 13px; }
+.order-line span { display: block; margin-top: 3px; color: #8192a4; font-size: 12px; }
+.order-line > strong { white-space: nowrap; }
+.order-total { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+.order-total span { color: #71879a; font-size: 12px; font-weight: 700; }
+.order-total strong { color: #172a42; font-size: 18px; }
+.order-cash { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #edf1f4; }
+.order-cash div { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.order-cash span { color: #71879a; font-size: 12px; font-weight: 700; }
+.order-cash strong { color: #1d3047; font-size: 14px; }
 @media (max-width: 720px) {
   .analytics-toolbar { align-items: stretch; }
   .analytics-range { width: 100%; }
@@ -446,3 +470,46 @@ html[data-theme="dark"] .return-item { background: #101b28; color: #f4f8fb; bord
 html[data-theme="dark"] .borrow-chip,
 html[data-theme="dark"] .status-pill.borrowed { background: #1d3348; color: #9fd0f5; }
 html[data-theme="dark"] .product-grid-others { border-top-color: #31465c; }
+html[data-theme="dark"] .orders-table tbody tr.order-row:hover { background: #1c2c3c; }
+html[data-theme="dark"] .order-hint,
+html[data-theme="dark"] .order-line span,
+html[data-theme="dark"] .order-total span { color: #93a8ba; }
+html[data-theme="dark"] .order-line { border-color: #31465c; }
+html[data-theme="dark"] .order-line strong,
+html[data-theme="dark"] .order-total strong,
+html[data-theme="dark"] .order-cash strong { color: #f4f8fb; }
+html[data-theme="dark"] .order-cash { border-top-color: #31465c; }
+html[data-theme="dark"] .order-cash span { color: #93a8ba; }
+html[data-theme="dark"] .product-modal .points-check { border-color: #31465c; color: #d7e4ef; }
+html[data-theme="dark"] .product-modal .points-check strong { color: #f4f8fb; }
+html[data-theme="dark"] .product-modal .points-check em { color: #93a8ba; }
+html[data-theme="dark"] .product-modal .points-check input { background: transparent; }
+.settings-form input:disabled,
+.settings-form input[readonly] { background: #f3f6f8; color: #6e8292; cursor: not-allowed; }
+html[data-theme="dark"] .settings-form input:disabled,
+html[data-theme="dark"] .settings-form input[readonly] { background: #0c1520; color: #d5e2ee; }
+html[data-theme="dark"] .loyalty-search .search-field { background: #101b28; border-color: #31465c; color: #d7e3ee; }
+html[data-theme="dark"] .loyalty-search .search-field input,
+html[data-theme="dark"] .search-field input { color: #f4f8fb; background: transparent; }
+html[data-theme="dark"] .search-field input::placeholder { color: #9eb0c2; }
+html[data-theme="dark"] .loyalty-person strong,
+html[data-theme="dark"] .loyalty-block .points-meta,
+html[data-theme="dark"] .loyalty-block .points-meta span,
+html[data-theme="dark"] .table-panel .row-actions span { color: #f4f8fb; }
+html[data-theme="dark"] .points-meta span:last-child,
+html[data-theme="dark"] .table-panel .row-actions span { color: #c8f29a; }
+html[data-theme="dark"] .points-track { background: #243648; }
+html[data-theme="dark"] .outline-button,
+html[data-theme="dark"] .row-actions .outline-button,
+html[data-theme="dark"] .loyalty-search-claim {
+  background: #61E903;
+  color: #213916;
+  border-color: #61E903;
+}
+html[data-theme="dark"] .outline-button:hover,
+html[data-theme="dark"] .loyalty-search-claim:hover { background: #4ad400; color: #213916; }
+html[data-theme="dark"] .status-pill,
+html[data-theme="dark"] .tier-pill { background: #1c3324; color: #d8ffb0; }
+html[data-theme="dark"] .status-pill.attention { background: #3a2c1e; color: #ffe0b8; }
+html[data-theme="dark"] .add-product { background: #61E903; color: #213916; }
+html[data-theme="dark"] .cart-count { background: #1c3324; color: #d8ffb0; }

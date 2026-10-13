@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Droplets, Eye, EyeOff, Lock, Mail, UserRound } from 'lucide-react';
+import { clearAuthLock, lockSecondsLeft, prepareEmail, prepareName, preparePassword, recordAuthFailure } from '@/lib/authGuard';
 import { stationLogo } from '@/lib/logo';
 import { supabase } from '@/lib/supabase';
 
@@ -50,25 +51,44 @@ export function AuthPage() {
     setError('');
     setNotice('');
 
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      setError('Enter your email and password.');
-      return;
-    }
-    if (password.length < 6) {
-      setError('Use a password with at least 6 characters.');
+    const wait = lockSecondsLeft();
+    if (wait > 0) {
+      setError(`Too many attempts. Try again in ${wait} seconds.`);
       return;
     }
 
+    const emailCheck = prepareEmail(email);
+    if ('error' in emailCheck) {
+      setError(emailCheck.error);
+      return;
+    }
+    const passwordCheck = preparePassword(password, mode === 'register');
+    if ('error' in passwordCheck) {
+      setError(passwordCheck.error);
+      return;
+    }
+    const cleanEmail = emailCheck.email;
+    const cleanPassword = passwordCheck.password;
+
+    let ownerName = '';
+    let station = '';
     if (mode === 'register') {
-      if (!fullName.trim() || !stationName.trim()) {
-        setError('Enter the owner name and station name.');
+      const ownerCheck = prepareName(fullName, 'owner name');
+      if ('error' in ownerCheck) {
+        setError(ownerCheck.error);
+        return;
+      }
+      const stationCheck = prepareName(stationName, 'station name');
+      if ('error' in stationCheck) {
+        setError(stationCheck.error);
         return;
       }
       if (password !== confirmPassword) {
         setError('Those passwords do not match.');
         return;
       }
+      ownerName = ownerCheck.name;
+      station = stationCheck.name;
     }
 
     setSubmitting(true);
@@ -76,20 +96,22 @@ export function AuthPage() {
       if (mode === 'register') {
         const { data, error: signUpError } = await supabase.auth.signUp({
           email: cleanEmail,
-          password,
+          password: cleanPassword,
           options: {
             emailRedirectTo: window.location.origin,
             data: {
-              full_name: fullName.trim(),
-              station_name: stationName.trim(),
+              full_name: ownerName,
+              station_name: station,
               role: 'owner',
             },
           },
         });
         if (signUpError) {
-          setError(friendlyAuthError(signUpError.message));
+          const locked = recordAuthFailure();
+          setError(locked ? `Too many attempts. Try again in ${locked} seconds.` : friendlyAuthError(signUpError.message));
           return;
         }
+        clearAuthLock();
         if (data.user && data.user.identities?.length === 0) {
           setError('That email already has an owner account. Sign in instead.');
           return;
@@ -97,8 +119,8 @@ export function AuthPage() {
         if (data.session && data.user) {
           await supabase.from('station_owners').upsert({
             id: data.user.id,
-            full_name: fullName.trim(),
-            station_name: stationName.trim(),
+            full_name: ownerName,
+            station_name: station,
             email: cleanEmail,
           });
         }
@@ -112,9 +134,14 @@ export function AuthPage() {
 
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
-        password,
+        password: cleanPassword,
       });
-      if (signInError) setError(friendlyAuthError(signInError.message));
+      if (signInError) {
+        const locked = recordAuthFailure();
+        setError(locked ? `Too many attempts. Try again in ${locked} seconds.` : friendlyAuthError(signInError.message));
+        return;
+      }
+      clearAuthLock();
     } finally {
       setSubmitting(false);
     }
@@ -143,13 +170,13 @@ export function AuthPage() {
               <label htmlFor="owner-name">Owner name
                 <span className="auth-input">
                   <UserRound size={16} />
-                  <input id="owner-name" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Juan Dela Cruz" autoComplete="name" />
+                  <input id="owner-name" value={fullName} onChange={(event) => setFullName(event.target.value)} placeholder="Juan Dela Cruz" autoComplete="name" maxLength={80} />
                 </span>
               </label>
               <label htmlFor="station-name">Station name
                 <span className="auth-input">
                   <Droplets size={16} />
-                  <input id="station-name" value={stationName} onChange={(event) => setStationName(event.target.value)} placeholder="CRMA Water Refilling Station" autoComplete="organization" />
+                  <input id="station-name" value={stationName} onChange={(event) => setStationName(event.target.value)} placeholder="CRMA Water Refilling Station" autoComplete="organization" maxLength={80} />
                 </span>
               </label>
             </>
@@ -158,14 +185,14 @@ export function AuthPage() {
           <label htmlFor="owner-email">Email
             <span className="auth-input">
               <Mail size={16} />
-              <input id="owner-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="owner@station.com" autoComplete="email" />
+              <input id="owner-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="owner@station.com" autoComplete="email" inputMode="email" maxLength={254} spellCheck={false} />
             </span>
           </label>
 
           <label htmlFor="owner-password">Password
             <span className="auth-input">
               <Lock size={16} />
-              <input id="owner-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={isRegister ? 'new-password' : 'current-password'} />
+              <input id="owner-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={isRegister ? '8+ characters, with a letter and number' : 'Your password'} autoComplete={isRegister ? 'new-password' : 'current-password'} maxLength={72} />
               <button type="button" className="auth-eye" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
@@ -176,7 +203,7 @@ export function AuthPage() {
             <label htmlFor="owner-confirm">Confirm password
               <span className="auth-input">
                 <Lock size={16} />
-                <input id="owner-confirm" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repeat your password" autoComplete="new-password" />
+                <input id="owner-confirm" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repeat your password" autoComplete="new-password" maxLength={72} />
               </span>
             </label>
           )}
@@ -201,6 +228,7 @@ function friendlyAuthError(message: string) {
   if (normalized.includes('invalid login credentials')) return 'That email or password is incorrect.';
   if (normalized.includes('email not confirmed')) return 'Confirm your email first, then sign in.';
   if (normalized.includes('already registered') || normalized.includes('already been registered')) return 'That email already has an owner account. Sign in instead.';
-  if (normalized.includes('password')) return 'Use a password with at least 6 characters.';
-  return message;
+  if (normalized.includes('password')) return 'Use at least 8 characters, with a letter and a number.';
+  if (normalized.includes('rate') || normalized.includes('too many')) return 'Too many attempts. Wait a moment, then try again.';
+  return 'Sign-in could not be completed. Check the email and password, then try again.';
 }
