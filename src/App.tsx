@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  Boxes,
   BarChart3,
   Bell,
   ChevronDown,
@@ -37,7 +38,7 @@ type View = 'Overview' | 'POS' | 'Inventory' | 'Sales & Analytics' | 'Loyalty Po
 type SettingsSection = 'general' | 'account' | 'notifications';
 type IconType = typeof LayoutDashboard;
 type Product = { id: string; name: string; category: string; unit: string; price: number; stock: number; reorder_level: number; active: boolean; image_url: string | null; earns_points?: boolean | null };
-type Customer = { id: string; name: string; phone: string | null; email: string | null; loyalty_points: number; refill_count: number; free_refills_claimed: number; total_spent: number; last_visit_at: string | null; created_at?: string };
+type Customer = { id: string; name: string; phone: string | null; email: string | null; address: string | null; loyalty_points: number; refill_count: number; free_refills_claimed: number; total_spent: number; last_visit_at: string | null; created_at?: string };
 type SaleLine = { sale_id: string; product_name: string; quantity: number; product_id: string | null };
 type CartItem = Product & { quantity: number };
 type Sale = { id: string; total: number; payment_method: string; status: string; created_at: string; customer_id: string | null; cash_received: number | null; change_amount: number | null };
@@ -75,6 +76,14 @@ const viewFromLocation = (): View => {
 const money = (value: number) => `${value < 0 ? '-' : ''}₱${Math.abs(value).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const shortDate = (value: string | null) => value ? new Date(value).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No visit yet';
 const dayKey = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+const todayInput = () => dayKey(new Date());
+const saleMoment = (dateKey?: string) => {
+  const today = todayInput();
+  const chosen = dateKey && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && dateKey <= today ? dateKey : today;
+  if (chosen === today) return new Date().toISOString();
+  const [year, month, day] = chosen.split('-').map(Number);
+  return new Date(year, (month || 1) - 1, day || 1, 12, 0, 0).toISOString();
+};
 const shiftDay = (offset: number) => { const day = new Date(); day.setDate(day.getDate() + offset); return day; };
 const salesOn = (sales: Sale[], offset: number) => sales.filter((sale) => dayKey(new Date(sale.created_at)) === dayKey(shiftDay(offset)));
 const sumSales = (sales: Sale[]) => sales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
@@ -134,6 +143,23 @@ const isUnpaid = (sale: Sale) => sale.status === 'unpaid';
 const unpaidTotal = (sales: Sale[], customerId: string) => sales.filter((sale) => sale.customer_id === customerId && isUnpaid(sale)).reduce((sum, sale) => sum + Number(sale.total || 0), 0);
 const earnsLoyalty = (item: { category?: string; earns_points?: boolean | null }) => item.earns_points == null ? item.category === 'Water Refill' : Boolean(item.earns_points);
 const refillPoints = (items: { category?: string; earns_points?: boolean | null; quantity: number }[]) => Math.round(items.filter(earnsLoyalty).reduce((sum, item) => sum + Number(item.quantity), 0));
+const loyaltyOffer = (items: { id: string; category?: string; earns_points?: boolean | null; quantity: number; price: number }[]) => {
+  const lines = items.filter((item) => earnsLoyalty(item) && Number(item.quantity) > 0);
+  const quantity = lines.reduce((sum, item) => sum + Number(item.quantity), 0);
+  const bundle = FREE_REFILL_POINTS + 1;
+  const free = Math.floor(quantity / bundle);
+  const ranked = [...lines].sort((a, b) => Number(a.price) - Number(b.price) || a.id.localeCompare(b.id));
+  const freeById = new Map<string, number>();
+  let left = free;
+  for (const line of ranked) {
+    if (left <= 0) break;
+    const take = Math.min(Number(line.quantity), left);
+    if (take > 0) freeById.set(line.id, take);
+    left -= take;
+  }
+  const discount = Math.round(ranked.reduce((sum, line) => sum + (freeById.get(line.id) ?? 0) * Number(line.price), 0) * 100) / 100;
+  return { quantity, free, discount, points: free > 0 ? 0 : quantity, freeById };
+};
 const normalizeProduct = (row: Product): Product => ({ ...row, earns_points: row.earns_points == null ? row.category === 'Water Refill' : Boolean(row.earns_points) });
 const cashColumnMissing = (message?: string) => /cash_received|change_amount|schema cache/i.test(message ?? '');
 const normalizeSale = (row: Partial<Sale> & Pick<Sale, 'id' | 'total' | 'payment_method' | 'status' | 'created_at'>): Sale => ({
@@ -149,6 +175,7 @@ const normalizeSale = (row: Partial<Sale> & Pick<Sale, 'id' | 'total' | 'payment
 const normalizeCustomer = (row: Customer): Customer => ({
   ...row,
   email: row.email ?? null,
+  address: row.address ?? null,
   loyalty_points: Number(row.loyalty_points) || 0,
   refill_count: Number(row.refill_count) || 0,
   free_refills_claimed: Number(row.free_refills_claimed) || 0,
@@ -157,21 +184,39 @@ const normalizeCustomer = (row: Customer): Customer => ({
 const loyaltyColumnMissing = (message?: string) => /refill_count|free_refills_claimed|schema cache/i.test(message ?? '');
 const exactCustomerName = (value: string) => value.trim();
 const isExactNameConflict = (message?: string) => /duplicate key|unique constraint|station_customers_exact_name/i.test(message ?? '');
-const insertStationCustomer = async (fields: { name: string; phone?: string | null; email?: string | null; loyalty_points: number; refill_count: number; total_spent: number; last_visit_at: string | null }) => {
+const insertStationCustomer = async (fields: { name: string; phone?: string | null; email?: string | null; address?: string | null; loyalty_points: number; refill_count: number; total_spent: number; last_visit_at: string | null }) => {
   const phone = fields.phone ?? null;
   const email = fields.email?.trim() || null;
-  const full = { name: fields.name, phone, email, loyalty_points: fields.loyalty_points, refill_count: fields.refill_count, free_refills_claimed: 0, total_spent: fields.total_spent, last_visit_at: fields.last_visit_at };
+  const address = fields.address?.trim() || null;
+  const full = { name: fields.name, phone, email, address, loyalty_points: fields.loyalty_points, refill_count: fields.refill_count, free_refills_claimed: 0, total_spent: fields.total_spent, last_visit_at: fields.last_visit_at };
   let result = await supabase.from('station_customers').insert(full).select('*').maybeSingle();
+  if (result.error && /address/i.test(result.error.message)) {
+    result = await supabase.from('station_customers').insert({ name: full.name, phone, email, loyalty_points: full.loyalty_points, refill_count: full.refill_count, free_refills_claimed: full.free_refills_claimed, total_spent: full.total_spent, last_visit_at: full.last_visit_at }).select('*').maybeSingle();
+  }
   if (result.error && /email/i.test(result.error.message)) {
-    result = await supabase.from('station_customers').insert({ name: full.name, phone: full.phone, loyalty_points: full.loyalty_points, refill_count: full.refill_count, free_refills_claimed: full.free_refills_claimed, total_spent: full.total_spent, last_visit_at: full.last_visit_at }).select('*').maybeSingle();
+    result = await supabase.from('station_customers').insert({ name: full.name, phone, address, loyalty_points: full.loyalty_points, refill_count: full.refill_count, free_refills_claimed: full.free_refills_claimed, total_spent: full.total_spent, last_visit_at: full.last_visit_at }).select('*').maybeSingle();
   }
   if (result.error && loyaltyColumnMissing(result.error.message)) {
-    result = await supabase.from('station_customers').insert({ name: fields.name, phone, loyalty_points: fields.loyalty_points, total_spent: fields.total_spent, last_visit_at: fields.last_visit_at }).select('*').maybeSingle();
+    result = await supabase.from('station_customers').insert({ name: fields.name, phone, address, loyalty_points: fields.loyalty_points, total_spent: fields.total_spent, last_visit_at: fields.last_visit_at }).select('*').maybeSingle();
   }
   return result;
 };
-const updateStationCustomer = async (id: string, fields: { loyalty_points: number; refill_count: number; total_spent: number; last_visit_at: string }) => {
+const updateCustomerProfile = async (id: string, fields: { name: string; phone: string | null; email: string | null; address: string | null }) => {
+  let result = await supabase.from('station_customers').update(fields).eq('id', id).select('*').maybeSingle();
+  if (result.error && /address/i.test(result.error.message)) {
+    result = await supabase.from('station_customers').update({ name: fields.name, phone: fields.phone, email: fields.email }).eq('id', id).select('*').maybeSingle();
+  }
+  if (result.error && /email/i.test(result.error.message)) {
+    result = await supabase.from('station_customers').update({ name: fields.name, phone: fields.phone, address: fields.address }).eq('id', id).select('*').maybeSingle();
+  }
+  return result;
+};
+const updateStationCustomer = async (id: string, fields: { loyalty_points: number; refill_count: number; total_spent: number; last_visit_at: string; free_refills_claimed?: number }) => {
   let result = await supabase.from('station_customers').update(fields).eq('id', id);
+  if (result.error && /free_refills_claimed/i.test(result.error.message)) {
+    const { free_refills_claimed: _claimed, ...rest } = fields;
+    result = await supabase.from('station_customers').update(rest).eq('id', id);
+  }
   if (result.error && loyaltyColumnMissing(result.error.message)) {
     result = await supabase.from('station_customers').update({ loyalty_points: fields.loyalty_points, total_spent: fields.total_spent, last_visit_at: fields.last_visit_at }).eq('id', id);
   }
@@ -270,7 +315,7 @@ function StationWorkspace({ session }: { session: Session }) {
     });
   };
   const updateCartQuantity = (id: string, delta: number) => setCart((current) => current.map((item) => item.id === id ? { ...item, quantity: Math.max(0, item.quantity + delta) } : item).filter((item) => item.quantity > 0));
-  const checkout = async (paid: boolean, customerName: string, borrowedCodes: string[] = [], tendered: number | null = null) => {
+  const checkout = async (paid: boolean, customerName: string, borrowedCodes: string[] = [], tendered: number | null = null, orderDate?: string) => {
     if (!cart.length) return false;
     const name = customerName.trim();
     const codes = [...new Set(borrowedCodes.map((code) => code.trim()).filter(Boolean))];
@@ -283,8 +328,12 @@ function StationWorkspace({ session }: { session: Session }) {
       return false;
     }
     const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-    const points = refillPoints(cart);
-    const stamp = new Date().toISOString();
+    const offer = loyaltyOffer(cart);
+    const total = Math.round((subtotal - offer.discount) * 100) / 100;
+    const points = offer.points;
+    const stamp = saleMoment(orderDate);
+    const whenNote = dayKey(new Date(stamp)) === dayKey(new Date()) ? '' : ` Recorded on ${new Date(stamp).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}.`;
+    const visitAt = (current: string | null | undefined) => !current || new Date(stamp) > new Date(current) ? stamp : current;
     let nextCustomer: Customer | null = null;
     if (name) {
       const existing = customers.find((item) => exactCustomerName(item.name) === name);
@@ -308,11 +357,11 @@ function StationWorkspace({ session }: { session: Session }) {
       }
     }
     const cashReceived = paid && tendered != null && Number.isFinite(tendered) ? Math.round(tendered * 100) / 100 : null;
-    const changeAmount = cashReceived == null ? null : Math.round((cashReceived - subtotal) * 100) / 100;
-    let inserted = await supabase.from('station_sales').insert({ customer_id: nextCustomer?.id ?? null, subtotal, total: subtotal, payment_method: paid ? 'Paid' : 'Unpaid', status: paid ? 'paid' : 'unpaid', cash_received: cashReceived, change_amount: changeAmount }).select('id,total,payment_method,status,created_at,customer_id,cash_received,change_amount').maybeSingle();
+    const changeAmount = cashReceived == null ? null : Math.round((cashReceived - total) * 100) / 100;
+    let inserted = await supabase.from('station_sales').insert({ customer_id: nextCustomer?.id ?? null, subtotal, total, payment_method: paid ? 'Paid' : 'Unpaid', status: paid ? 'paid' : 'unpaid', cash_received: cashReceived, change_amount: changeAmount, created_at: stamp }).select('id,total,payment_method,status,created_at,customer_id,cash_received,change_amount').maybeSingle();
     let cashNote = '';
     if (inserted.error && cashColumnMissing(inserted.error.message)) {
-      inserted = await supabase.from('station_sales').insert({ customer_id: nextCustomer?.id ?? null, subtotal, total: subtotal, payment_method: paid ? 'Paid' : 'Unpaid', status: paid ? 'paid' : 'unpaid' }).select('id,total,payment_method,status,created_at,customer_id').maybeSingle();
+      inserted = await supabase.from('station_sales').insert({ customer_id: nextCustomer?.id ?? null, subtotal, total, payment_method: paid ? 'Paid' : 'Unpaid', status: paid ? 'paid' : 'unpaid', created_at: stamp }).select('id,total,payment_method,status,created_at,customer_id').maybeSingle();
       if (cashReceived != null) cashNote = ' Cash received was not stored. Run the cash SQL in Supabase.';
     }
     const { data, error } = inserted;
@@ -321,10 +370,10 @@ function StationWorkspace({ session }: { session: Session }) {
       return false;
     }
     const savedSale = normalizeSale({ ...data, cash_received: data.cash_received ?? cashReceived, change_amount: data.change_amount ?? changeAmount });
-    const { error: itemError } = await supabase.from('station_sale_items').insert(cart.map((item) => ({ sale_id: data.id, product_id: item.id, product_name: item.name, quantity: item.quantity, unit_price: item.price, line_total: item.price * item.quantity })));
+    const { error: itemError } = await supabase.from('station_sale_items').insert(cart.map((item) => { const freeUnits = offer.freeById.get(item.id) ?? 0; return { sale_id: data.id, product_id: item.id, product_name: item.name, quantity: item.quantity, unit_price: item.price, line_total: item.price * (item.quantity - freeUnits) }; }));
     let borrowNote = '';
     if (codes.length && nextCustomer) {
-      const { data: borrowedRows, error: borrowError } = await supabase.from('station_borrowed_containers').insert(codes.map((code) => ({ customer_id: nextCustomer.id, sale_id: data.id, container_code: code }))).select('id,customer_id,sale_id,container_code,borrowed_at,returned_at');
+      const { data: borrowedRows, error: borrowError } = await supabase.from('station_borrowed_containers').insert(codes.map((code) => ({ customer_id: nextCustomer.id, sale_id: data.id, container_code: code, borrowed_at: stamp }))).select('id,customer_id,sale_id,container_code,borrowed_at,returned_at');
       if (borrowError || !borrowedRows) borrowNote = /station_borrowed_containers|schema cache/i.test(borrowError?.message ?? '') ? ' Run the borrowed-container SQL in Supabase so the codes are saved.' : /duplicate|unique/i.test(borrowError?.message ?? '') ? ' One of those container codes is already borrowed.' : ' Borrowed containers could not be recorded.';
       else {
         setBorrowed((current) => [...borrowedRows, ...current]);
@@ -333,7 +382,9 @@ function StationWorkspace({ session }: { session: Session }) {
     }
     if (nextCustomer && !itemError) {
       const earned = paid ? points : 0;
-      const patch = { loyalty_points: nextCustomer.loyalty_points + earned, refill_count: nextCustomer.refill_count + earned, total_spent: Number(nextCustomer.total_spent) + (paid ? subtotal : 0), last_visit_at: stamp };
+      const refills = paid ? offer.quantity : 0;
+      const claimed = nextCustomer.free_refills_claimed + (paid ? offer.free : 0);
+      const patch = { loyalty_points: nextCustomer.loyalty_points + earned, refill_count: nextCustomer.refill_count + refills, free_refills_claimed: claimed, total_spent: Number(nextCustomer.total_spent) + (paid ? total : 0), last_visit_at: visitAt(nextCustomer.last_visit_at) };
       const { error: updateError } = await updateStationCustomer(nextCustomer.id, patch);
       const saved = { ...nextCustomer, ...patch };
       setCustomers((current) => {
@@ -342,18 +393,20 @@ function StationWorkspace({ session }: { session: Session }) {
         return next.sort((a, b) => Number(b.total_spent) - Number(a.total_spent));
       });
       if (updateError) {
-        setSales((current) => [savedSale, ...current]);
+        setSales((current) => [savedSale, ...current.filter((item) => item.id !== savedSale.id)].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
         setCart([]);
-        setToast(`Sale saved, but points could not be updated. Run the latest SQL migration in Supabase.${borrowNote}${cashNote}`);
+        setToast(`Sale saved, but points could not be updated. Run the latest SQL migration in Supabase.${whenNote}${borrowNote}${cashNote}`);
         return true;
       }
     }
-    setSales((current) => [savedSale, ...current]);
+    setSales((current) => [savedSale, ...current.filter((item) => item.id !== savedSale.id)].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
     setCart([]);
-    if (itemError) setToast(`Sale saved, but the items could not be recorded.${borrowNote}${cashNote}`);
-    else if (!paid) setToast(`Unpaid order saved for ${name}. No points added.${borrowNote}`);
-    else if (name && points) setToast(`Paid order saved. ${name} earned ${points} point${points === 1 ? '' : 's'}.${borrowNote}${cashNote}`);
-    else setToast(`Paid order saved.${borrowNote}${cashNote}`);
+    const freeNote = offer.free ? ` ${offer.free} free refill${offer.free === 1 ? '' : 's'} applied.` : '';
+    if (itemError) setToast(`Sale saved, but the items could not be recorded.${whenNote}${freeNote}${borrowNote}${cashNote}`);
+    else if (!paid) setToast(`Unpaid order saved for ${name}.${whenNote}${freeNote} No points added.${borrowNote}`);
+    else if (name && offer.free) setToast(`Paid order saved.${whenNote}${freeNote} No points added. The free refill was claimed on this sale.${borrowNote}${cashNote}`);
+    else if (name && points) setToast(`Paid order saved.${whenNote}${freeNote} ${name} earned ${points} point${points === 1 ? '' : 's'}.${borrowNote}${cashNote}`);
+    else setToast(`Paid order saved.${whenNote}${freeNote}${borrowNote}${cashNote}`);
     return true;
   };
 
@@ -387,7 +440,7 @@ function StationWorkspace({ session }: { session: Session }) {
       case 'Customer List': return <CustomersView customers={customers} products={products} sales={sales} borrowed={borrowed} setBorrowed={setBorrowed} setCustomers={setCustomers} setSales={setSales} setToast={setToast} />;
       case 'Expenses': return <ExpensesView expenses={expenses} setExpenses={setExpenses} setToast={setToast} />;
       case 'Settings': return <SettingsView session={session} section={settingsSection} setSection={openSettings} darkMode={darkMode} setDarkMode={setDarkMode} notify={notify} setNotify={updateNotify} setToast={setToast} />;
-      default: return <OverviewView sales={sales} products={products} customers={customers} expenses={expenses} lowStock={lowStock} setActiveView={setActiveView} />;
+      default: return <OverviewView sales={sales} products={products} customers={customers} expenses={expenses} borrowed={borrowed} lowStock={lowStock} setActiveView={setActiveView} />;
     }
   };
 
@@ -429,7 +482,7 @@ function StationWorkspace({ session }: { session: Session }) {
   );
 }
 
-function OverviewView({ sales, products, customers, expenses, lowStock, setActiveView }: { sales: Sale[]; products: Product[]; customers: Customer[]; expenses: Expense[]; lowStock: number; setActiveView: (view: View) => void }) {
+function OverviewView({ sales, products, customers, expenses, borrowed, lowStock, setActiveView }: { sales: Sale[]; products: Product[]; customers: Customer[]; expenses: Expense[]; borrowed: BorrowedContainer[]; lowStock: number; setActiveView: (view: View) => void }) {
   const revenue = sales.filter((sale) => !isUnpaid(sale));
   const todaySales = salesOn(revenue, 0);
   const yesterdaySales = salesOn(revenue, -1);
@@ -442,6 +495,8 @@ function OverviewView({ sales, products, customers, expenses, lowStock, setActiv
   const netYesterday = sumSales(yesterdaySales) - yesterdayExpenses;
   const monthStart = dayKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const newMembers = customers.filter((customer) => customer.created_at && customer.created_at.slice(0, 10) >= monthStart).length;
+  const openBorrowed = borrowed.filter((item) => !item.returned_at);
+  const borrowedCustomers = new Set(openBorrowed.map((item) => item.customer_id)).size;
   const week = Array.from({ length: 7 }, (_, index) => {
     const offset = index - 6;
     return { label: shiftDay(offset).toLocaleDateString('en-PH', { weekday: 'short' }), total: sumSales(salesOn(revenue, offset)), isToday: offset === 0 };
@@ -457,13 +512,14 @@ function OverviewView({ sales, products, customers, expenses, lowStock, setActiv
     { label: 'Orders today', value: `${todaySales.length}`, change: percentChange(todaySales.length, yesterdaySales.length), icon: Receipt, tone: 'green', warn: false },
     { label: 'Low stock items', value: `${lowStock}`, change: lowStock ? 'Needs attention' : 'All stocked', icon: Package, tone: 'orange', warn: lowStock > 0 },
     { label: 'Loyalty members', value: `${customers.length}`, change: `+${newMembers} this month`, icon: Sparkles, tone: 'teal', warn: false },
+    { label: 'Borrowed containers', value: `${openBorrowed.length}`, change: openBorrowed.length ? `${borrowedCustomers} customer${borrowedCustomers === 1 ? '' : 's'}` : 'None out', icon: Boxes, tone: 'blue', warn: openBorrowed.length > 0 },
   ];
   return <><section className="stats-grid overview-stats">{cards.map(({ label, value, change, icon: Icon, tone, warn }) => <div className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={19} /></div><p>{label}</p><strong>{value}</strong><span className={warn ? 'warning-text' : 'positive-text'}>{change}</span></div>)}</section><section className="dashboard-grid"><div className="panel sales-panel"><PanelHeader title="Sales overview" action="Last 7 days" /><div className="chart-wrap"><div className="chart-y">{[1, 0.75, 0.5, 0.25, 0].map((step) => <span key={step}>{moneyAxis(axisMax * step)}</span>)}</div><div className="chart"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bars">{week.map((day) => <div className="bar-column" key={day.label}><div className={`bar ${day.isToday ? 'today' : ''}`} style={{ height: `${axisMax ? (day.total / axisMax) * 100 : 0}%` }} /><span>{day.label}</span></div>)}</div></div></div><div className="chart-footer"><span><i className="legend-dot blue-dot" /> Sales</span><strong>{money(weekTotal)} <em>{percentChange(weekTotal, previousWeekTotal)}</em></strong></div></div><div className="panel quick-panel"><PanelHeader title="Quick actions" /><button onClick={() => setActiveView('POS')} className="quick-action"><span className="quick-action-icon aqua"><ShoppingCart size={18} /></span><span><strong>Start a new sale</strong><small>Open point of sale</small></span><span>→</span></button><button onClick={() => setActiveView('Inventory')} className="quick-action"><span className="quick-action-icon blue"><Package size={18} /></span><span><strong>Check inventory</strong><small>{lowStock} items need restocking</small></span><span>→</span></button><button onClick={() => setActiveView('Customer List')} className="quick-action"><span className="quick-action-icon yellow"><UserRound size={18} /></span><span><strong>Add a customer</strong><small>Grow your loyalty list</small></span><span>→</span></button></div></section><section className="dashboard-grid lower-grid"><div className="panel"><PanelHeader title="Recent transactions" action="View all" onAction={() => setActiveView('Sales & Analytics')} /><div className="transaction-list">{sales.length ? sales.slice(0, 4).map((sale) => <div className="transaction-row" key={sale.id}><div className="transaction-icon"><Receipt size={16} /></div><div><strong>{customerName(sale.customer_id)}</strong><span>{sale.payment_method} · {shortDate(sale.created_at)}</span></div><strong className="transaction-amount">{money(Number(sale.total))}</strong><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span></div>) : <div className="empty-state">No sales recorded yet.</div>}</div></div><div className="panel"><PanelHeader title="Inventory snapshot" action="Manage" onAction={() => setActiveView('Inventory')} /><div className="stock-list">{products.length ? products.slice(0, 4).map((product) => <div className="stock-row" key={product.id}><div><strong>{product.name}</strong><span>{product.category} · {product.unit}</span></div><div className="stock-progress"><div><i style={{ width: `${Math.min(Number(product.stock), 100)}%` }} /></div><span className={isLowStock(product) ? 'warning-text' : ''}>{product.stock} left</span></div></div>) : <div className="empty-state">No products yet.</div>}</div></div></section></>;
 }
 
 function PanelHeader({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) { return <div className="panel-header"><h2>{title}</h2>{action && <button onClick={onAction}>{action} <span>→</span></button>}</div>; }
 
-function POSView({ products, customers, sales, cart, addToCart, updateCartQuantity, checkout }: { products: Product[]; customers: Customer[]; sales: Sale[]; cart: CartItem[]; addToCart: (product: Product) => void; updateCartQuantity: (id: string, delta: number) => void; checkout: (paid: boolean, customerName: string, borrowedCodes: string[]) => Promise<boolean> }) {
+function POSView({ products, customers, sales, cart, addToCart, updateCartQuantity, checkout }: { products: Product[]; customers: Customer[]; sales: Sale[]; cart: CartItem[]; addToCart: (product: Product) => void; updateCartQuantity: (id: string, delta: number) => void; checkout: (paid: boolean, customerName: string, borrowedCodes: string[], tendered?: number | null, orderDate?: string) => Promise<boolean> }) {
   const [category, setCategory] = useState('All items');
   const [customerName, setCustomerName] = useState('');
   const [nameFocused, setNameFocused] = useState(false);
@@ -471,6 +527,7 @@ function POSView({ products, customers, sales, cart, addToCart, updateCartQuanti
   const [borrowDraft, setBorrowDraft] = useState('');
   const [borrowedCodes, setBorrowedCodes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
   const categories = ['All items', ...Array.from(new Set(products.map((product) => product.category)))];
   const visible = category === 'All items' ? products : products.filter((product) => product.category === category);
   const refillProducts = visible.filter((product) => product.category === 'Water Refill');
@@ -478,7 +535,9 @@ function POSView({ products, customers, sales, cart, addToCart, updateCartQuanti
   const splitRows = category === 'All items' && refillProducts.length > 0 && otherProducts.length > 0;
   const productCard = (product: Product) => <button className="product-card" key={product.id} onClick={() => addToCart(product)}><div className={`product-art ${product.image_url ? 'has-photo' : ''} ${product.category === 'Container' ? 'container-art' : ''}`}>{product.image_url ? <img src={product.image_url} alt="" /> : <Droplets size={31} />}</div><div className="product-info"><strong>{product.name}</strong><span>{product.category === 'Water Refill' ? 'Water refill' : `${product.stock} available`}</span><b>{money(product.price)}</b></div><div className="add-product"><Plus size={16} /></div></button>;
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const points = refillPoints(cart);
+  const offer = loyaltyOffer(cart);
+  const total = Math.round((subtotal - offer.discount) * 100) / 100;
+  const points = offer.points;
   const typed = customerName.trim();
   const query = typed.toLowerCase();
   const match = typed ? customers.find((item) => exactCustomerName(item.name) === typed) : undefined;
@@ -487,17 +546,20 @@ function POSView({ products, customers, sales, cart, addToCart, updateCartQuanti
   const owed = match ? unpaidTotal(sales, match.id) : 0;
   const cash = Number(cashInput);
   const cashReady = cashInput.trim() !== '' && Number.isFinite(cash);
-  const change = cashReady ? Math.round((cash - subtotal) * 100) / 100 : 0;
+  const change = cashReady ? Math.round((cash - total) * 100) / 100 : 0;
   const cashCovers = cashReady && change >= 0;
   const needsBorrower = borrowedCodes.length > 0 || borrowDraft.trim().length > 0;
+  const today = todayInput();
+  const orderDate = pickedDate && pickedDate <= today ? pickedDate : today;
+  const orderIsToday = orderDate === today;
   const submit = async (paid: boolean) => {
     if (paid && !cashCovers) return;
     const draft = borrowDraft.trim();
     const codes = draft && !borrowedCodes.some((code) => code.toLowerCase() === draft.toLowerCase()) ? [...borrowedCodes, draft] : borrowedCodes;
     setSaving(true);
-    const ok = await checkout(paid, typed, codes, paid ? cash : null);
+    const ok = await checkout(paid, typed, codes, paid ? cash : null, orderDate);
     setSaving(false);
-    if (ok) { setCustomerName(''); setCashInput(''); setBorrowDraft(''); setBorrowedCodes([]); }
+    if (ok) { setCustomerName(''); setCashInput(''); setBorrowDraft(''); setBorrowedCodes([]); setPickedDate(null); }
   };
   const addBorrowed = () => {
     const code = borrowDraft.trim();
@@ -506,7 +568,7 @@ function POSView({ products, customers, sales, cart, addToCart, updateCartQuanti
     setBorrowedCodes((current) => [...current, code]);
     setBorrowDraft('');
   };
-  return <div className="pos-layout"><section className="panel product-panel"><div className="pos-toolbar"><div className="segmented">{categories.map((item) => <button key={item} className={category === item ? 'selected' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><span>{visible.length} products</span></div>{splitRows ? <div className="product-groups"><div className="product-grid">{refillProducts.map(productCard)}</div><div className="product-grid product-grid-others">{otherProducts.map(productCard)}</div></div> : <div className="product-grid">{visible.map(productCard)}</div>}</section><aside className="panel cart-panel"><div className="cart-heading"><div><p className="eyebrow">CURRENT ORDER</p><h2>New sale</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</span></div>{cart.length ? <div className="cart-items">{cart.map((item) => <div className="cart-row" key={item.id}><div className="cart-thumb">{item.image_url ? <img src={item.image_url} alt="" /> : <Droplets size={15} />}</div><div className="cart-product"><strong>{item.name}</strong><span>{money(item.price)} / {item.unit}</span></div><div className="quantity"><button onClick={() => updateCartQuantity(item.id, -1)}>−</button><span>{item.quantity}</span><button onClick={() => updateCartQuantity(item.id, 1)}>+</button></div><strong>{money(item.price * item.quantity)}</strong></div>)}</div> : <div className="empty-cart"><ShoppingCart size={28} /><strong>Your order is empty</strong><span>Select a product to begin</span></div>}<div className="customer-field"><span className="customer-label">Customer name <em className={needsBorrower ? 'required' : ''}>{needsBorrower ? 'Required' : 'Optional'}</em></span><input value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={() => setNameFocused(true)} onBlur={() => setNameFocused(false)} placeholder="Enter Customer's name (Optional)" autoComplete="off" />{showSuggestions && <div className="customer-suggest">{suggestions.map((item) => { const name = item.name.trim(); const index = name.toLowerCase().indexOf(query); return <button type="button" key={item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { setCustomerName(name); setNameFocused(false); }}><span>{index >= 0 ? <>{name.slice(0, index)}<mark>{name.slice(index, index + query.length)}</mark>{name.slice(index + query.length)}</> : name}</span><small>{item.loyalty_points}/11 pts</small></button>; })}</div>}</div>{typed && <p className={`customer-hint ${owed ? 'warn' : ''}`}>{match ? `${match.name} · ${match.loyalty_points}/11 points · ${match.refill_count} refills${owed ? ` · Unpaid ${money(owed)}` : ''}` : 'New customer. Completing this order saves the name to the customer list.'}</p>}<div className="borrow-box">{needsBorrower && !typed && <p className="customer-hint warn">Enter the customer name. It is required for a borrowed container.</p>}<span className="customer-label">Record borrowed container</span><div className="borrow-add"><input value={borrowDraft} onChange={(event) => setBorrowDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addBorrowed(); } }} placeholder="Container code" /><button type="button" className="outline-button" onClick={addBorrowed}>Add</button></div>{borrowedCodes.length > 0 && <div className="borrow-list">{borrowedCodes.map((code) => <span className="borrow-chip" key={code}>{code}<button type="button" onClick={() => setBorrowedCodes((current) => current.filter((item) => item !== code))} aria-label={`Remove ${code}`}>×</button></span>)}</div>}</div><div className="cart-summary"><div><span>Subtotal</span><strong>{money(subtotal)}</strong></div><div><span>Discount</span><strong>₱0.00</strong></div><div className="total-line"><span>Total</span><strong>{money(subtotal)}</strong></div><label className="customer-field cash-field">Enter cash<input value={cashInput} onChange={(event) => setCashInput(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label><div className={`change-line ${cashReady && !cashCovers ? 'short' : ''}`}><span>Change</span><strong>{cashReady && !cashCovers ? 'Short' : money(Math.max(change, 0))}</strong></div>{cashReady && !cashCovers && <p className="cash-short">Short by {money(Math.abs(change))}</p>}<p className="points-note">{points ? (typed ? `${points} point${points === 1 ? '' : 's'} if this order is paid` : `Add a customer name to keep these ${points} point${points === 1 ? '' : 's'}`) : 'Only products checked for loyalty earn points.'}</p><div className="checkout-actions"><button className="checkout-button" type="button" onClick={() => void submit(true)} disabled={!cart.length || saving || !cashCovers || (needsBorrower && !typed)}>{saving ? 'Saving...' : 'Complete as paid'}</button><button className="unpaid-button" type="button" onClick={() => void submit(false)} disabled={!cart.length || saving || (needsBorrower && !typed)}>Complete as unpaid</button></div><p className="secure-note">1 point for each paid product checked for loyalty. Unpaid orders do not earn points.</p></div></aside></div>;
+  return <div className="pos-layout"><section className="panel product-panel"><div className="pos-toolbar"><div className="segmented">{categories.map((item) => <button key={item} className={category === item ? 'selected' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><span>{visible.length} products</span></div>{splitRows ? <div className="product-groups"><div className="product-grid">{refillProducts.map(productCard)}</div><div className="product-grid product-grid-others">{otherProducts.map(productCard)}</div></div> : <div className="product-grid">{visible.map(productCard)}</div>}</section><aside className="panel cart-panel"><div className="cart-heading"><div><p className="eyebrow">CURRENT ORDER</p><h2>New sale</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</span></div>{cart.length ? <div className="cart-items">{cart.map((item) => <div className="cart-row" key={item.id}><div className="cart-thumb">{item.image_url ? <img src={item.image_url} alt="" /> : <Droplets size={15} />}</div><div className="cart-product"><strong>{item.name}</strong><span>{money(item.price)} / {item.unit}</span>{(offer.freeById.get(item.id) ?? 0) > 0 && <em className="cart-free">{offer.freeById.get(item.id)} free</em>}</div><div className="quantity"><button onClick={() => updateCartQuantity(item.id, -1)}>−</button><span>{item.quantity}</span><button onClick={() => updateCartQuantity(item.id, 1)}>+</button></div><strong>{money(item.price * (item.quantity - (offer.freeById.get(item.id) ?? 0)))}</strong></div>)}</div> : <div className="empty-cart"><ShoppingCart size={28} /><strong>Your order is empty</strong><span>Select a product to begin</span></div>}<div className="customer-field"><span className="customer-label">Customer name <em className={needsBorrower ? 'required' : ''}>{needsBorrower ? 'Required' : 'Optional'}</em></span><input value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={() => setNameFocused(true)} onBlur={() => setNameFocused(false)} placeholder="Enter Customer's name (Optional)" autoComplete="off" />{showSuggestions && <div className="customer-suggest">{suggestions.map((item) => { const name = item.name.trim(); const index = name.toLowerCase().indexOf(query); return <button type="button" key={item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { setCustomerName(name); setNameFocused(false); }}><span>{index >= 0 ? <>{name.slice(0, index)}<mark>{name.slice(index, index + query.length)}</mark>{name.slice(index + query.length)}</> : name}</span><small>{item.loyalty_points}/11 pts</small></button>; })}</div>}</div>{typed && <p className={`customer-hint ${owed ? 'warn' : ''}`}>{match ? `${match.name} · ${match.loyalty_points}/11 points · ${match.refill_count} refills${owed ? ` · Unpaid ${money(owed)}` : ''}` : 'New customer. Completing this order saves the name to the customer list.'}</p>}<div className="borrow-box">{needsBorrower && !typed && <p className="customer-hint warn">Enter the customer name. It is required for a borrowed container.</p>}<span className="customer-label">Record borrowed container</span><div className="borrow-add"><input value={borrowDraft} onChange={(event) => setBorrowDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addBorrowed(); } }} placeholder="Container code" /><button type="button" className="outline-button" onClick={addBorrowed}>Add</button></div>{borrowedCodes.length > 0 && <div className="borrow-list">{borrowedCodes.map((code) => <span className="borrow-chip" key={code}>{code}<button type="button" onClick={() => setBorrowedCodes((current) => current.filter((item) => item !== code))} aria-label={`Remove ${code}`}>×</button></span>)}</div>}</div><div className="cart-summary"><div><span>Subtotal</span><strong>{money(subtotal)}</strong></div><div className={offer.free ? 'free-line' : ''}><span>{offer.free ? `Free refill · ${offer.free}` : 'Discount'}</span><strong>{offer.free ? `−${money(offer.discount)}` : money(0)}</strong></div><div className="total-line"><span>Total</span><strong>{money(total)}</strong></div><label className="customer-field order-date-field">Order date<input type="date" value={orderDate} max={today} onChange={(event) => { const value = event.target.value; setPickedDate(!value || value > today ? null : value); }} /></label>{!orderIsToday && <p className="customer-hint">This order will be recorded on {new Date(`${orderDate}T12:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}.</p>}<label className="customer-field cash-field">Enter cash<input value={cashInput} onChange={(event) => setCashInput(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label><div className={`change-line ${cashReady && !cashCovers ? 'short' : ''}`}><span>Change</span><strong>{cashReady && !cashCovers ? 'Short' : money(Math.max(change, 0))}</strong></div>{cashReady && !cashCovers && <p className="cash-short">Short by {money(Math.abs(change))}</p>}<p className="points-note">{offer.free ? `${offer.free} free on this order. Claimed now, so no points are added.` : points ? (typed ? `${points} point${points === 1 ? '' : 's'} if this order is paid` : `Add a customer name to keep these ${points} point${points === 1 ? '' : 's'}`) : 'Only products checked for loyalty earn points.'}</p><div className="checkout-actions"><button className="checkout-button" type="button" onClick={() => void submit(true)} disabled={!cart.length || saving || !cashCovers || (needsBorrower && !typed)}>{saving ? 'Saving...' : 'Complete as paid'}</button><button className="unpaid-button" type="button" onClick={() => void submit(false)} disabled={!cart.length || saving || (needsBorrower && !typed)}>Complete as unpaid</button></div><p className="secure-note">Every 12 loyalty refills is 11 paid and 1 free. Unpaid orders do not earn points.</p></div></aside></div>;
 }
 
 function InventoryView({ products, search, setSearch, setProducts, setCart, setToast }: { products: Product[]; search: string; setSearch: (value: string) => void; setProducts: (items: Product[]) => void; setCart: (items: CartItem[] | ((current: CartItem[]) => CartItem[])) => void; setToast: (message: string) => void }) {
@@ -647,6 +709,7 @@ function AnalyticsView({ sales: allSales, customers, borrowed, setToast }: { sal
   const [anchorKey, setAnchorKey] = useState(dayKey(new Date()));
   const [orderLimit, setOrderLimit] = useState(ORDER_PAGE);
   const [exporting, setExporting] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detailSale, setDetailSale] = useState<Sale | null>(null);
   const [detailLines, setDetailLines] = useState<{ product_name: string; quantity: number; unit_price: number | null; line_total: number | null }[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -788,14 +851,27 @@ function AnalyticsView({ sales: allSales, customers, borrowed, setToast }: { sal
     <section className="panel analytics-panel"><div className="panel-header"><h2>{breakdownTitle}</h2><span className="analytics-period">{label}</span></div><div className={`chart-wrap analytics-bars ${range === 'Day' || range === 'Month' ? 'dense' : ''}`}><div className="chart-y">{[1, 0.75, 0.5, 0.25, 0].map((step) => <span key={step}>{moneyAxis(axisMax * step)}</span>)}</div><div className="chart"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bars">{bars.map((bar) => <div className="bar-column" key={bar.key}><div className={`bar ${bar.active ? 'today' : ''}`} style={{ height: `${axisMax ? (bar.total / axisMax) * 100 : 0}%` }} title={money(bar.total)} /><span>{bar.label}</span></div>)}</div></div></div></section>
     <section className="panel recent-orders">
       <div className="panel-header"><h2>Orders</h2><span className="analytics-period">{label}</span></div>
-      <p className="order-hint">Click an order to see each product, quantity, and price.</p>
+      <p className="order-hint">Tap an order to open the details. On a larger screen, click a row to see the items.</p>
       <div className="table-scroll">
         <table className="orders-table stack-table">
           <thead><tr><th>Customer</th><th>When</th><th>Payment</th><th className="num">Amount</th><th>Status</th></tr></thead>
           <tbody>
             {visibleOrders.length ? visibleOrders.map((sale) => {
               const borrowedCodes = openBorrowedCodes(sale.customer_id);
-              return <tr className="order-row" key={sale.id} role="button" tabIndex={0} aria-label={`View ${customerName(sale.customer_id)} order`} onClick={() => void openOrder(sale)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openOrder(sale); } }}><td data-label="Customer"><div className="order-customer"><strong>{customerName(sale.customer_id)}</strong>{borrowedCodes.length > 0 && <span className="status-pill borrowed">Borrowed: {borrowedCodes.join(', ')}</span>}</div></td><td data-label="When">{orderWhen(sale.created_at)}</td><td data-label="Payment">{sale.payment_method}</td><td className="num" data-label="Amount"><strong>{money(Number(sale.total))}</strong></td><td data-label="Status"><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span></td></tr>;
+              const expanded = expandedId === sale.id;
+              const openRow = () => {
+                if (window.matchMedia('(max-width: 840px)').matches) setExpandedId((current) => current === sale.id ? null : sale.id);
+                else void openOrder(sale);
+              };
+              return <tr className={`order-row${expanded ? ' expanded' : ''}`} key={sale.id} role="button" tabIndex={0} aria-expanded={expanded} aria-label={`${customerName(sale.customer_id)}, ${money(Number(sale.total))}`} onClick={openRow} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRow(); } }}>
+                <td className="order-summary" data-label="Customer"><div className="order-toggle"><div className="order-customer"><strong>{customerName(sale.customer_id)}</strong>{borrowedCodes.length > 0 && <span className="status-pill borrowed desktop-borrowed">Borrowed: {borrowedCodes.join(', ')}</span>}</div><strong className="order-mobile-total">{money(Number(sale.total))}</strong><ChevronDown size={16} className={`order-chevron${expanded ? ' open' : ''}`} /></div></td>
+                <td className="order-extra" data-label="When">{orderWhen(sale.created_at)}</td>
+                <td className="order-extra" data-label="Payment">{sale.payment_method}</td>
+                <td className="num order-amount" data-label="Amount"><strong>{money(Number(sale.total))}</strong></td>
+                <td className="order-extra" data-label="Status"><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span></td>
+                {borrowedCodes.length > 0 && <td className="order-extra order-borrowed-row" data-label="Borrowed">{borrowedCodes.join(', ')}</td>}
+                <td className="order-extra order-open-detail"><button type="button" className="outline-button" onClick={(event) => { event.stopPropagation(); void openOrder(sale); }}>View items</button></td>
+              </tr>;
             }) : <tr><td colSpan={5}>{allSales.length ? 'No orders for this date.' : 'No orders yet.'}</td></tr>}
           </tbody>
         </table>
@@ -803,7 +879,7 @@ function AnalyticsView({ sales: allSales, customers, borrowed, setToast }: { sal
       {orders.length > 0 && <div className="orders-summary"><span>{orders.length} order{orders.length === 1 ? '' : 's'}{unpaidOrders.length ? ` · ${unpaidOrders.length} unpaid` : ''}</span><strong>{money(listedTotal)}</strong></div>}
       {orders.length > visibleOrders.length && <button type="button" className="outline-button full show-more" onClick={() => setOrderLimit((count) => count + ORDER_PAGE)}>Show more</button>}
     </section>
-    {detailSale && <div className="modal-backdrop" onClick={() => setDetailSale(null)}><div className="product-modal order-detail" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER DETAILS</p><h2>{customerName(detailSale.customer_id)}</h2><p className="muted">{orderWhen(detailSale.created_at)} · {detailSale.payment_method}</p>{detailLoading ? <div className="empty-state">Loading items...</div> : detailLines.length ? <div className="order-lines">{detailLines.map((line, index) => <div className="order-line" key={`${line.product_name}-${index}`}><div><strong>{line.product_name}</strong><span>{line.quantity} × {line.unit_price == null ? 'Price not recorded' : money(line.unit_price)}</span></div><strong>{line.line_total == null ? '—' : money(line.line_total)}</strong></div>)}</div> : <div className="empty-state">Items were not recorded for this order.</div>}<div className="order-total"><span>Total</span><strong>{money(Number(detailSale.total))}</strong></div>{detailSale.cash_received != null && <div className="order-cash"><div><span>Cash received</span><strong>{money(Number(detailSale.cash_received))}</strong></div>{detailSale.change_amount != null && <div><span>Change</span><strong>{money(Number(detailSale.change_amount))}</strong></div>}</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setDetailSale(null)}>Close</button></div></div></div>}
+    {detailSale && <div className="modal-backdrop" onClick={() => setDetailSale(null)}><div className="product-modal order-detail" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER DETAILS</p><h2>{customerName(detailSale.customer_id)}</h2><p className="muted">{orderWhen(detailSale.created_at)} · {detailSale.payment_method}</p>{detailLoading ? <div className="empty-state">Loading items...</div> : detailLines.length ? <div className="order-lines">{detailLines.map((line, index) => <div className="order-line" key={`${line.product_name}-${index}`}><div><strong>{line.product_name}</strong><span>{line.quantity} × {line.unit_price == null ? 'Price not recorded' : money(line.unit_price)}{line.unit_price != null && line.line_total != null && line.unit_price * line.quantity - line.line_total > 0.01 ? ` · ${Math.round((line.unit_price * line.quantity - line.line_total) / line.unit_price)} free` : ''}</span></div><strong>{line.line_total == null ? '—' : money(line.line_total)}</strong></div>)}</div> : <div className="empty-state">Items were not recorded for this order.</div>}<div className="order-total"><span>Total</span><strong>{money(Number(detailSale.total))}</strong></div>{detailSale.cash_received != null && <div className="order-cash"><div><span>Cash received</span><strong>{money(Number(detailSale.cash_received))}</strong></div>{detailSale.change_amount != null && <div><span>Change</span><strong>{money(Number(detailSale.change_amount))}</strong></div>}</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setDetailSale(null)}>Close</button></div></div></div>}
   </>;
 }
 
@@ -867,6 +943,7 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
   const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [historyCustomer, setHistoryCustomer] = useState<Customer | null>(null);
@@ -879,27 +956,46 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
   const [selectedReturns, setSelectedReturns] = useState<string[]>([]);
   const [returning, setReturning] = useState(false);
   const [formError, setFormError] = useState('');
-  const closeForm = () => { if (!saving) { setIsOpen(false); setName(''); setEmail(''); setPhone(''); setFormError(''); } };
-  const addCustomer = async () => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const openAdd = () => { setEditingId(null); setName(''); setEmail(''); setPhone(''); setAddress(''); setFormError(''); setIsOpen(true); };
+  const openEdit = (customer: Customer) => { setEditingId(customer.id); setName(customer.name); setEmail(customer.email ?? ''); setPhone(customer.phone ?? ''); setAddress(customer.address ?? ''); setFormError(''); setIsOpen(true); };
+  const closeForm = () => { if (!saving) { setIsOpen(false); setEditingId(null); setName(''); setEmail(''); setPhone(''); setAddress(''); setFormError(''); } };
+  const saveCustomer = async () => {
     const trimmed = exactCustomerName(name);
     const nextEmail = email.trim();
+    const nextPhone = phone.trim() || null;
+    const nextAddress = address.trim() || null;
     if (!trimmed) { setFormError('Enter the customer name.'); return; }
     if (nextEmail && !nextEmail.includes('@')) { setFormError('Enter a valid email.'); return; }
-    if (customers.some((item) => exactCustomerName(item.name) === trimmed)) { setFormError('This exact name is already on the customer list.'); return; }
+    if (customers.some((item) => item.id !== editingId && exactCustomerName(item.name) === trimmed)) { setFormError('This exact name is already on the customer list.'); return; }
     setSaving(true);
     const { data: existingRows, error: lookupError } = await supabase.from('station_customers').select('id,name').eq('name', trimmed);
     if (lookupError) { setSaving(false); setFormError('Customer could not be checked. Try again.'); return; }
-    if ((existingRows ?? []).some((row) => exactCustomerName(row.name) === trimmed)) { setSaving(false); setFormError('This exact name is already on the customer list.'); return; }
-    const { data, error } = await insertStationCustomer({ name: trimmed, phone: phone.trim() || null, email: nextEmail || null, loyalty_points: 0, refill_count: 0, total_spent: 0, last_visit_at: null });
-    setSaving(false);
-    if (error && isExactNameConflict(error.message)) { setFormError('This exact name is already on the customer list.'); return; }
-    if (error || !data) { setFormError(error?.message ? `Customer could not be saved. ${error.message}` : 'Customer could not be saved.'); return; }
-    setCustomers([normalizeCustomer(data), ...customers]);
-    setToast(`${trimmed} was added to the customer list.`);
+    if ((existingRows ?? []).some((row) => row.id !== editingId && exactCustomerName(row.name) === trimmed)) { setSaving(false); setFormError('This exact name is already on the customer list.'); return; }
+    if (editingId) {
+      const current = customers.find((item) => item.id === editingId);
+      const { data, error } = await updateCustomerProfile(editingId, { name: trimmed, phone: nextPhone, email: nextEmail || null, address: nextAddress });
+      setSaving(false);
+      if (error && isExactNameConflict(error.message)) { setFormError('This exact name is already on the customer list.'); return; }
+      if (error || !data) { setFormError(error?.message ? `Customer could not be updated. ${error.message}` : 'Customer could not be updated.'); return; }
+      const saved = normalizeCustomer({ ...(current ?? data), ...data, name: trimmed, email: nextEmail || null, phone: nextPhone, address: nextAddress });
+      setCustomers(customers.map((item) => item.id === editingId ? saved : item));
+      if (historyCustomer?.id === editingId) setHistoryCustomer(saved);
+      setToast(`${trimmed} was updated.`);
+    } else {
+      const { data, error } = await insertStationCustomer({ name: trimmed, phone: nextPhone, email: nextEmail || null, address: nextAddress, loyalty_points: 0, refill_count: 0, total_spent: 0, last_visit_at: null });
+      setSaving(false);
+      if (error && isExactNameConflict(error.message)) { setFormError('This exact name is already on the customer list.'); return; }
+      if (error || !data) { setFormError(error?.message ? `Customer could not be saved. ${error.message}` : 'Customer could not be saved.'); return; }
+      setCustomers([normalizeCustomer(data), ...customers]);
+      setToast(`${trimmed} was added to the customer list.`);
+    }
     setIsOpen(false);
+    setEditingId(null);
     setName('');
     setEmail('');
     setPhone('');
+    setAddress('');
     setFormError('');
   };
   const openHistory = async (customer: Customer) => {
@@ -931,9 +1027,14 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
     setPayingId(sale.id);
     const { error } = await supabase.from('station_sales').update({ status: 'paid', payment_method: 'Paid' }).eq('id', sale.id);
     if (error) { setPayingId(null); setToast('This order could not be marked as paid.'); return; }
-    const earned = refillPoints(historyLines.filter((line) => line.sale_id === sale.id).map((line) => { const product = products.find((item) => item.id === line.product_id); return { category: product?.category ?? '', earns_points: product?.earns_points, quantity: Number(line.quantity) }; }));
+    const paidLines = historyLines.filter((line) => line.sale_id === sale.id).map((line) => { const product = products.find((item) => item.id === line.product_id); return { id: line.product_id || line.product_name, category: product?.category ?? '', earns_points: product?.earns_points, quantity: Number(line.quantity), price: Number(product?.price ?? 0) }; });
+    const paidOffer = loyaltyOffer(paidLines);
+    const gross = paidLines.reduce((sum, line) => sum + line.price * line.quantity, 0);
+    const usedFree = paidOffer.free > 0 && Math.abs(Number(sale.total) - (gross - paidOffer.discount)) < 0.05;
+    const earned = usedFree ? 0 : refillPoints(paidLines);
+    const refills = paidOffer.quantity;
     const current = customers.find((item) => item.id === historyCustomer.id) ?? historyCustomer;
-    const patch = { loyalty_points: current.loyalty_points + earned, refill_count: current.refill_count + earned, total_spent: Number(current.total_spent) + Number(sale.total || 0), last_visit_at: new Date().toISOString() };
+    const patch = { loyalty_points: current.loyalty_points + earned, refill_count: current.refill_count + refills, free_refills_claimed: current.free_refills_claimed + (usedFree ? paidOffer.free : 0), total_spent: Number(current.total_spent) + Number(sale.total || 0), last_visit_at: new Date().toISOString() };
     const { error: updateError } = await updateStationCustomer(current.id, patch);
     setSales(sales.map((item) => item.id === sale.id ? { ...item, status: 'paid', payment_method: 'Paid' } : item));
     if (!updateError) {
@@ -942,7 +1043,7 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
       setHistoryCustomer(saved);
     }
     setPayingId(null);
-    setToast(updateError ? 'Order marked as paid, but points could not be updated.' : earned ? `${current.name}'s order is paid. ${earned} point${earned === 1 ? '' : 's'} added.` : `${current.name}'s order is marked as paid.`);
+    setToast(updateError ? 'Order marked as paid, but points could not be updated.' : usedFree ? `${current.name}'s order is paid. The free refill was already claimed, so no points were added.` : earned ? `${current.name}'s order is paid. ${earned} point${earned === 1 ? '' : 's'} added.` : `${current.name}'s order is marked as paid.`);
   };
   const openBorrowed = (customerId: string) => borrowed.filter((item) => item.customer_id === customerId && !item.returned_at);
   const openReturn = (customer: Customer) => { setReturnCustomer(customer); setSelectedReturns([]); };
@@ -959,7 +1060,7 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
     setSelectedReturns([]);
   };
   const needle = query.trim().toLowerCase();
-  const visible = [...customers].filter((customer) => `${customer.name} ${customer.email ?? ''} ${customer.phone ?? ''}`.toLowerCase().includes(needle)).sort((a, b) => a.name.localeCompare(b.name));
+  const visible = [...customers].filter((customer) => `${customer.name} ${customer.email ?? ''} ${customer.phone ?? ''} ${customer.address ?? ''}`.toLowerCase().includes(needle)).sort((a, b) => a.name.localeCompare(b.name));
   const lastOrder = (customerId: string) => sales.find((sale) => sale.customer_id === customerId);
   const historyOrders = historyCustomer ? sales.filter((sale) => sale.customer_id === historyCustomer.id) : [];
   const linesFor = (saleId: string) => historyLines.filter((line) => line.sale_id === saleId).map((line) => `${Number(line.quantity)}× ${line.product_name}`).join(', ');
@@ -970,12 +1071,12 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
     <section className="panel table-panel">
       <div className="table-toolbar">
         <div><h2>All customers</h2><p className="muted">{customers.length} customer{customers.length === 1 ? '' : 's'}. Added here or from the POS.</p></div>
-        <div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, email, or number" /></div>
-        <button className="outline-button" type="button" onClick={() => setIsOpen(true)}><Plus size={16} /> Add customer</button>
+        <div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, email, number, or address" /></div>
+        <button className="outline-button" type="button" onClick={openAdd}><Plus size={16} /> Add customer</button>
       </div>
       <div className="table-scroll">
         <table className="customer-table stack-table">
-          <thead><tr><th>Name</th><th>Email</th><th>Contact no.</th><th>Last order</th><th /></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Contact no.</th><th>Address</th><th>Last order</th><th /></tr></thead>
           <tbody>{visible.length ? visible.map((customer) => {
             const latest = lastOrder(customer.id);
             const borrowedOpen = openBorrowed(customer.id);
@@ -983,15 +1084,16 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
               <td data-label="Name"><div className="customer-cell"><div className="customer-avatar">{customer.name.slice(0, 2).toUpperCase()}</div><strong>{customer.name}</strong>{unpaidTotal(sales, customer.id) > 0 && <span className="status-pill attention">Unpaid order</span>}{borrowedOpen.length > 0 && <span className="status-pill borrowed">Borrowed</span>}</div></td>
               <td data-label="Email">{customer.email || '—'}</td>
               <td data-label="Contact no.">{customer.phone || '—'}</td>
+              <td data-label="Address">{customer.address || '—'}</td>
               <td data-label="Last order">{latest ? `${shortDate(latest.created_at)} · ${money(Number(latest.total))}` : 'No orders yet'}</td>
-              <td className="row-actions" data-label="Actions">{borrowedOpen.length > 0 && <button type="button" className="outline-button" onClick={() => openReturn(customer)}>Return</button>}<button type="button" className="outline-button" onClick={() => void openHistory(customer)}><Receipt size={14} /> History</button><button type="button" className="text-danger" onClick={() => setPendingDelete(customer)}><Trash2 size={14} /> Delete</button></td>
+              <td className="row-actions" data-label="Actions">{borrowedOpen.length > 0 && <button type="button" className="outline-button" onClick={() => openReturn(customer)}>Return</button>}<button type="button" className="outline-button" onClick={() => openEdit(customer)}><Pencil size={14} /> Edit</button><button type="button" className="outline-button" onClick={() => void openHistory(customer)}><Receipt size={14} /> History</button><button type="button" className="text-danger" onClick={() => setPendingDelete(customer)}><Trash2 size={14} /> Delete</button></td>
             </tr>;
-          }) : <tr><td colSpan={5}>{customers.length ? 'No customers match this search.' : 'No customers yet. Add one here or enter a name on the next POS order.'}</td></tr>}</tbody>
+          }) : <tr><td colSpan={6}>{customers.length ? 'No customers match this search.' : 'No customers yet. Add one here or enter a name on the next POS order.'}</td></tr>}</tbody>
         </table>
       </div>
     </section>
-    {isOpen && <div className="modal-backdrop" onClick={closeForm}><form className="product-modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void addCustomer(); }}><p className="eyebrow">NEW CUSTOMER</p><h2>Add a customer</h2><p className="muted">They can earn points the next time you record a paid refill under this name.</p><div className="product-form"><label className="product-span">Customer name<input value={name} onChange={(event) => { setName(event.target.value); setFormError(''); }} placeholder="Juan Cruz" /></label>{formError && <p className="auth-alert" role="alert">{formError}</p>}<label className="product-span">Email<input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setFormError(''); }} placeholder="name@email.com" /></label><label className="product-span">Contact no.<input value={phone} onChange={(event) => { setPhone(event.target.value); setFormError(''); }} inputMode="tel" placeholder="09xxxxxxxxx" /></label></div><div className="modal-actions"><button type="button" className="outline-button" onClick={closeForm} disabled={saving}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save customer'}</button></div></form></div>}
-    {historyCustomer && <div className="modal-backdrop" onClick={() => setHistoryCustomer(null)}><div className="product-modal history-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER HISTORY</p><h2>{historyCustomer.name}</h2><p className="muted">{historyCustomer.email || 'No email'} · {historyCustomer.phone || 'No contact number'}</p>{historyLoading ? <div className="empty-state">Loading orders...</div> : historyOrders.length ? <div className="history-list">{historyOrders.map((sale) => <div className="history-order" key={sale.id}><div><strong>{orderStamp(sale.created_at)}</strong><span>{linesFor(sale.id) || 'Items not recorded'}</span></div><strong className="history-total">{money(Number(sale.total))}</strong><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span>{isUnpaid(sale) && <button type="button" className="primary-button history-pay" onClick={() => void markPaid(sale)} disabled={payingId === sale.id}>{payingId === sale.id ? 'Saving...' : 'Mark as paid'}</button>}</div>)}</div> : <div className="empty-state">No orders yet for this customer.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setHistoryCustomer(null)}>Close</button></div></div></div>}
+    {isOpen && <div className="modal-backdrop" onClick={closeForm}><form className="product-modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveCustomer(); }}><p className="eyebrow">{editingId ? 'EDIT CUSTOMER' : 'NEW CUSTOMER'}</p><h2>{editingId ? 'Edit customer' : 'Add a customer'}</h2><p className="muted">{editingId ? 'Update the name, email, contact number, or address. Loyalty points stay the same.' : 'They can earn points the next time you record a paid refill under this name. Email, contact number, and address are optional.'}</p><div className="product-form"><label className="product-span">Customer name<input value={name} onChange={(event) => { setName(event.target.value); setFormError(''); }} placeholder="Juan Cruz" /></label>{formError && <p className="auth-alert" role="alert">{formError}</p>}<label className="product-span">Email <em>optional</em><input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setFormError(''); }} placeholder="name@email.com" /></label><label className="product-span">Contact no. <em>optional</em><input value={phone} onChange={(event) => { setPhone(event.target.value); setFormError(''); }} inputMode="tel" placeholder="09xxxxxxxxx" /></label><label className="product-span">Address <em>optional</em><input value={address} onChange={(event) => { setAddress(event.target.value); setFormError(''); }} placeholder="Street, barangay, city" /></label></div><div className="modal-actions"><button type="button" className="outline-button" onClick={closeForm} disabled={saving}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving...' : editingId ? 'Save changes' : 'Save customer'}</button></div></form></div>}
+    {historyCustomer && <div className="modal-backdrop" onClick={() => setHistoryCustomer(null)}><div className="product-modal history-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER HISTORY</p><h2>{historyCustomer.name}</h2><p className="muted">{historyCustomer.email || 'No email'} · {historyCustomer.phone || 'No contact number'} · {historyCustomer.address || 'No address'}</p>{historyLoading ? <div className="empty-state">Loading orders...</div> : historyOrders.length ? <div className="history-list">{historyOrders.map((sale) => <div className="history-order" key={sale.id}><div><strong>{orderStamp(sale.created_at)}</strong><span>{linesFor(sale.id) || 'Items not recorded'}</span></div><strong className="history-total">{money(Number(sale.total))}</strong><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span>{isUnpaid(sale) && <button type="button" className="primary-button history-pay" onClick={() => void markPaid(sale)} disabled={payingId === sale.id}>{payingId === sale.id ? 'Saving...' : 'Mark as paid'}</button>}</div>)}</div> : <div className="empty-state">No orders yet for this customer.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setHistoryCustomer(null)}>Close</button></div></div></div>}
     {returnCustomer && <div className="modal-backdrop" onClick={() => { if (!returning) setReturnCustomer(null); }}><div className="product-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">BORROWED CONTAINERS</p><h2>{returnCustomer.name}</h2><p className="muted">Select the codes to return, or return all of them.</p>{returnOpen.length ? <div className="return-list">{returnOpen.map((item) => <label className="return-item" key={item.id}><input type="checkbox" checked={selectedReturns.includes(item.id)} onChange={() => toggleReturn(item.id)} />{item.container_code}</label>)}</div> : <div className="empty-state">No borrowed containers left.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setReturnCustomer(null)} disabled={returning}>Cancel</button><button type="button" className="outline-button" onClick={() => void markReturned(selectedReturns)} disabled={returning || !selectedReturns.length}>{returning ? 'Saving...' : 'Return selected'}</button><button type="button" className="primary-button" onClick={() => void markReturned(returnOpen.map((item) => item.id))} disabled={returning || !returnOpen.length}>Return all</button></div></div></div>}
     {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">REMOVE CUSTOMER</p><h2>Remove {pendingDelete.name}?</h2><p className="muted">They leave the customer list and their loyalty points. Past orders stay in sales.</p><div className="delete-customer-card"><div className="customer-avatar large">{pendingDelete.name.slice(0, 2).toUpperCase()}</div><div><strong>{pendingDelete.name}</strong><span>{pendingDelete.phone || 'No contact number'}</span></div></div><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeCustomer()} disabled={deleting}>{deleting ? 'Removing...' : 'Remove customer'}</button></div></div></div>}
   </>;
