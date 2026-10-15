@@ -1198,7 +1198,7 @@ const CONTAINER_BATCH_LIMIT = 1000;
 const CONTAINER_PAGE = 30;
 const containerCodeOf = (prefix: string, number: number) => `${prefix}${String(number).padStart(3, '0')}`;
 const containerSequence = (codes: string[], prefix: string) => codes.reduce((max, code) => {
-  const match = code.trim().match(new RegExp(`^${prefix}(\\d+)$`, 'i'));
+  const match = code.trim().match(new RegExp(`^${prefix}(\\d+)(?:-.*)?$`, 'i'));
   const value = match ? Number(match[1]) : 0;
   return Number.isFinite(value) && value > max ? value : max;
 }, 0);
@@ -1222,6 +1222,9 @@ function ContainersView({ containers, setContainers, containersReady, customers,
   const [deleting, setDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [pendingDelete, setPendingDelete] = useState<StationContainer[] | null>(null);
+  const [editing, setEditing] = useState<StationContainer | null>(null);
+  const [editCode, setEditCode] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const pickAllRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!openField) return;
@@ -1303,6 +1306,45 @@ function ContainersView({ containers, setContainers, containersReady, customers,
     const ids = new Set(selectable.map((item) => item.id));
     setSelectedIds((current) => allPicked ? current.filter((id) => !ids.has(id)) : [...new Set([...current, ...ids])]);
   };
+  const startEdit = (item: StationContainer) => {
+    setEditing(item);
+    setEditCode(item.code);
+  };
+  const saveCode = async () => {
+    if (!editing || savingEdit) return;
+    const next = editCode.trim().replace(/\s+/g, ' ');
+    if (!next) { setToast('Enter a container code.'); return; }
+    if (containers.some((item) => item.id !== editing.id && item.code.trim().toLowerCase() === next.toLowerCase())) {
+      setToast('That container code is already on the list.');
+      return;
+    }
+    const previous = editing.code;
+    if (next.toLowerCase() === previous.trim().toLowerCase()) { setEditing(null); return; }
+    const related = borrowed.filter((item) => item.container_code.toLowerCase() === previous.toLowerCase());
+    const takenOut = borrowed.some((item) => !item.returned_at && item.container_code.toLowerCase() === next.toLowerCase() && !related.some((row) => row.id === item.id));
+    if (takenOut) { setToast('That code is already borrowed.'); return; }
+    setSavingEdit(true);
+    const { data, error } = await supabase.from('station_containers').update({ code: next }).eq('id', editing.id).select('id,code,created_at').maybeSingle();
+    if (error || !data) {
+      setSavingEdit(false);
+      setToast(/duplicate|unique/i.test(error?.message ?? '') ? 'That container code is already on the list.' : 'Container code could not be updated.');
+      return;
+    }
+    if (related.length) {
+      const { error: borrowError } = await supabase.from('station_borrowed_containers').update({ container_code: next }).in('id', related.map((item) => item.id));
+      if (borrowError) {
+        setSavingEdit(false);
+        setContainers((current) => current.map((item) => item.id === data.id ? data as StationContainer : item).sort((a, b) => compareContainerCodes(a.code, b.code)));
+        setToast('The code was saved, but borrowed records still use the old name.');
+        return;
+      }
+      setBorrowed((current) => current.map((item) => related.some((row) => row.id === item.id) ? { ...item, container_code: next } : item));
+    }
+    setSavingEdit(false);
+    setContainers((current) => current.map((item) => item.id === data.id ? data as StationContainer : item).sort((a, b) => compareContainerCodes(a.code, b.code)));
+    setEditing(null);
+    setToast(`${previous} is now ${next}.`);
+  };
   const askDelete = (items: StationContainer[]) => {
     const ready = items.filter((item) => !openFor(item.code));
     if (!ready.length) {
@@ -1348,7 +1390,7 @@ function ContainersView({ containers, setContainers, containersReady, customers,
               <td className="pick-cell" data-label="Select"><input className="container-check" type="checkbox" checked={picked} disabled={!!open} onChange={() => togglePicked(item.id)} aria-label={`Select ${item.code}`} /></td>
               <td data-label="Code"><strong>{item.code}</strong></td>
               <td data-label="Status">{open ? <span className="status-pill borrowed">Borrowed · {customerName(open.customer_id)}</span> : <span className="status-pill">Available</span>}</td>
-              <td className="row-actions" data-label="Actions"><button type="button" className="text-danger" onClick={() => askDelete([item])}><Trash2 size={14} /> Delete</button></td>
+              <td className="row-actions" data-label="Actions"><button type="button" className="outline-button" onClick={() => startEdit(item)}><Pencil size={14} /> Edit</button><button type="button" className="text-danger" onClick={() => askDelete([item])}><Trash2 size={14} /> Delete</button></td>
             </tr>;
           }) : <tr><td colSpan={4}>{containers.length ? `No ${statusFilter === 'All' ? '' : `${statusFilter.toLowerCase()} `}containers match this search.` : 'No containers yet. Choose a type, color, and quantity above.'}</td></tr>}</tbody>
         </table>
@@ -1361,6 +1403,7 @@ function ContainersView({ containers, setContainers, containersReady, customers,
       </div>
       {borrowedGroups.length ? <div className="borrow-groups">{(() => { const tones = ['green', 'blue', 'amber', 'teal', 'violet', 'rose']; let multi = 0; return borrowedGroups.map((group) => { const returnButton = (item: BorrowedContainer) => <button type="button" className="return-button" onClick={() => setPendingReturn(item)} disabled={returningId === item.id}>Mark as return</button>; if (group.items.length < 2) { const item = group.items[0]; return <div className="borrow-single" key={item.id}><strong>{item.container_code}</strong><span>{group.name}</span><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>; } const tone = tones[multi % tones.length]; multi += 1; return <section className={`borrow-group tone-${tone}`} key={group.items[0].customer_id}><h3>{group.name}<span>{group.items.length} containers</span></h3>{group.items.map((item) => <div className="borrow-group-row" key={item.id}><strong>{item.container_code}</strong><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>)}</section>; }); })()}</div> : <div className="empty-state">{openBorrowed.length ? 'No borrowed containers match this search.' : 'No borrowed containers right now.'}</div>}
     </section>
+    {editing && <div className="modal-backdrop" onClick={() => { if (!savingEdit) setEditing(null); }}><form className="product-modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveCode(); }}><p className="eyebrow">EDIT CODE</p><h2>Rename {editing.code}</h2><p className="muted">Add a name so this container stays with one person. Example: SW001-ELOISA.</p><label className="product-span">Container code<input value={editCode} onChange={(event) => setEditCode(event.target.value)} placeholder="SW001-ELOISA" autoFocus /></label><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setEditing(null)} disabled={savingEdit}>Cancel</button><button className="primary-button" type="submit" disabled={savingEdit || !editCode.trim()}>{savingEdit ? 'Saving...' : 'Save code'}</button></div></form></div>}
     {pendingReturn && <div className="modal-backdrop" onClick={() => { if (!returningId) setPendingReturn(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">RETURN CONTAINER</p><h2>Mark {pendingReturn.container_code} as returned?</h2><p className="muted">{customerName(pendingReturn.customer_id)} borrowed this container. It stays out until you confirm.</p><div className="modal-actions"><button type="button" className="danger-button" onClick={() => setPendingReturn(null)} disabled={!!returningId}>Cancel</button><button type="button" className="return-button" onClick={() => void markReturned(pendingReturn)} disabled={!!returningId}>{returningId ? 'Saving...' : 'Mark as return'}</button></div></div></div>}
     {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">DELETE CONTAINER</p><h2>Delete {pendingDelete.length === 1 ? pendingDelete[0].code : `${pendingDelete.length} containers`}?</h2><p className="muted">{pendingDelete.length === 1 ? 'It leaves the container list and will no longer appear as a POS suggestion.' : `${pendingDelete.slice(0, 8).map((item) => item.code).join(', ')}${pendingDelete.length > 8 ? ` and ${pendingDelete.length - 8} more` : ''} will leave the list.`}</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeContainer()} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button></div></div></div>}
   </>;

@@ -336,7 +336,7 @@ html[data-theme="dark"] .choice-list em, html[data-theme="dark"] .choice-menu > 
 .container-table { table-layout: fixed; }
 .container-table .pick-cell { width: 44px; text-align: center; }
 .container-table th:nth-child(2) { width: 28%; }
-.container-table td.row-actions, .container-table th:last-child { width: 132px; }
+.container-table td.row-actions, .container-table th:last-child { width: 176px; }
 .container-table th, .container-table td { vertical-align: middle; }
 .container-table tr.picked td { background: #f7fbf2; }
 .container-more, .loyalty-more { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e8eef2; }
