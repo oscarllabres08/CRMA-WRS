@@ -925,16 +925,24 @@ function AnalyticsView({ sales: allSales, customers, borrowed, setToast }: { sal
   </>;
 }
 
+const LOYALTY_PAGE = 20;
+
 function LoyaltyView({ customers, sales, setCustomers, setToast, setActiveView }: { customers: Customer[]; sales: Sale[]; setCustomers: (items: Customer[]) => void; setToast: (message: string) => void; setActiveView: (view: View) => void }) {
   const [pending, setPending] = useState<Customer | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [query, setQuery] = useState('');
+  const [shown, setShown] = useState(LOYALTY_PAGE);
+  const [readyShown, setReadyShown] = useState(LOYALTY_PAGE);
+  useEffect(() => { setShown(LOYALTY_PAGE); }, [query]);
   const needle = query.trim().toLowerCase();
   const matchesSearch = (customer: Customer) => !needle || customer.name.toLowerCase().includes(needle);
   const pointsLeft = (points: number) => points >= FREE_REFILL_POINTS ? 'Ready for a free refill' : `${FREE_REFILL_POINTS - points} point${FREE_REFILL_POINTS - points === 1 ? '' : 's'} to go`;
   const closest = [...customers].filter((customer) => matchesSearch(customer) && customer.loyalty_points > 0 && customer.loyalty_points < FREE_REFILL_POINTS).sort((a, b) => b.loyalty_points - a.loyalty_points).slice(0, 4);
   const ready = [...customers].filter((customer) => matchesSearch(customer) && customer.loyalty_points >= FREE_REFILL_POINTS).sort((a, b) => b.loyalty_points - a.loyalty_points);
   const ranked = [...customers].filter(matchesSearch).sort((a, b) => b.loyalty_points - a.loyalty_points || a.name.localeCompare(b.name));
+  const listed = ranked.slice(0, shown);
+  const listedReady = ready.slice(0, readyShown);
+  const moreBar = (count: number, total: number, onMore: () => void) => total > 0 ? <div className="loyalty-more"><span>{count} out of {total}</span>{count < total && <button type="button" className="outline-button" onClick={onMore}>Show more</button>}</div> : null;
   const giveFreeRefill = async () => {
     if (!pending || pending.loyalty_points < FREE_REFILL_POINTS) return;
     setClaiming(true);
@@ -960,21 +968,23 @@ function LoyaltyView({ customers, sales, setCustomers, setToast, setActiveView }
       <div className="loyalty-orbit"><Sparkles size={29} /><strong>11</strong><span>1 free refill</span></div>
     </section>
     <div className="loyalty-search"><div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a customer" /></div></div>
-    {needle && <section className="panel loyalty-block"><PanelHeader title="Search results" />{ranked.length ? <div className="loyalty-spotlight">{ranked.map((customer) => <div className="loyalty-person" key={customer.id}><strong>{customer.name}</strong><div className="points-meta"><span>{customer.loyalty_points} / {FREE_REFILL_POINTS}</span><span>{pointsLeft(customer.loyalty_points)}</span></div><div className="points-track"><i style={{ width: `${Math.min(customer.loyalty_points / FREE_REFILL_POINTS, 1) * 100}%` }} /></div>{customer.loyalty_points >= FREE_REFILL_POINTS && <button className="primary-button loyalty-search-claim" type="button" onClick={() => setPending(customer)}><Gift size={16} /> Give 1 free refill</button>}</div>)}</div> : <div className="empty-state">No customer matches that search.</div>}</section>}
+    {needle && <section className="panel loyalty-block"><PanelHeader title="Search results" />{listed.length ? <div className="loyalty-spotlight">{listed.map((customer) => <div className="loyalty-person" key={customer.id}><strong>{customer.name}</strong><div className="points-meta"><span>{customer.loyalty_points} / {FREE_REFILL_POINTS}</span><span>{pointsLeft(customer.loyalty_points)}</span></div><div className="points-track"><i style={{ width: `${Math.min(customer.loyalty_points / FREE_REFILL_POINTS, 1) * 100}%` }} /></div>{customer.loyalty_points >= FREE_REFILL_POINTS && <button className="primary-button loyalty-search-claim" type="button" onClick={() => setPending(customer)}><Gift size={16} /> Give 1 free refill</button>}</div>)}</div> : <div className="empty-state">No customer matches that search.</div>}{moreBar(listed.length, ranked.length, () => setShown((count) => count + LOYALTY_PAGE))}</section>}
     {!needle && <section className="panel loyalty-block">
       <PanelHeader title="Closest to a free refill" />
       {closest.length ? <div className="loyalty-spotlight">{closest.map((customer) => <div className="loyalty-person" key={customer.id}><strong>{customer.name}</strong><div className="points-meta"><span>{customer.loyalty_points} / {FREE_REFILL_POINTS}</span><span>{FREE_REFILL_POINTS - customer.loyalty_points} to go</span></div><div className="points-track"><i style={{ width: `${(customer.loyalty_points / FREE_REFILL_POINTS) * 100}%` }} /></div></div>)}</div> : <div className="empty-state">No one is close yet. Points start on the next paid refill.</div>}
     </section>}
     {!needle && <section className="panel loyalty-block">
       <PanelHeader title="Ready for a free refill" />
-      {ready.length ? <div className="claim-list">{ready.map((customer) => <div className="claim-row" key={customer.id}><div><strong>{customer.name}</strong><span>{customer.loyalty_points} points · {customer.free_refills_claimed} free refill{customer.free_refills_claimed === 1 ? '' : 's'} claimed</span></div><button className="primary-button" type="button" onClick={() => setPending(customer)}><Gift size={16} /> Give 1 free refill</button></div>)}</div> : <div className="empty-state">Nobody has 11 points yet.</div>}
+      {listedReady.length ? <div className="claim-list">{listedReady.map((customer) => <div className="claim-row" key={customer.id}><div><strong>{customer.name}</strong><span>{customer.loyalty_points} points · {customer.free_refills_claimed} free refill{customer.free_refills_claimed === 1 ? '' : 's'} claimed</span></div><button className="primary-button" type="button" onClick={() => setPending(customer)}><Gift size={16} /> Give 1 free refill</button></div>)}</div> : <div className="empty-state">Nobody has 11 points yet.</div>}
+      {moreBar(listedReady.length, ready.length, () => setReadyShown((count) => count + LOYALTY_PAGE))}
     </section>}
     <section className="panel table-panel">
       <PanelHeader title="All loyalty customers" action="View customer list" onAction={() => setActiveView('Customer List')} />
-      <div className="table-scroll"><table className="stack-table"><thead><tr><th>Customer</th><th>Refills</th><th>Points</th><th>Unpaid</th><th /></tr></thead><tbody>{ranked.length ? ranked.map((customer) => {
+      <div className="table-scroll"><table className="stack-table"><thead><tr><th>Customer</th><th>Refills</th><th>Points</th><th>Unpaid</th><th /></tr></thead><tbody>{listed.length ? listed.map((customer) => {
         const owed = unpaidTotal(sales, customer.id);
         return <tr key={customer.id}><td data-label="Customer"><div className="customer-cell"><div className="customer-avatar">{customer.name.slice(0, 2).toUpperCase()}</div><strong>{customer.name}</strong></div></td><td data-label="Refills">{customer.refill_count}</td><td data-label="Points"><strong className="points-text">{customer.loyalty_points} / {FREE_REFILL_POINTS}</strong></td><td data-label="Unpaid">{owed ? <strong className="unpaid-text">{money(owed)}</strong> : '—'}</td><td className="row-actions" data-label="Reward">{customer.loyalty_points >= FREE_REFILL_POINTS ? <button className="outline-button" type="button" onClick={() => setPending(customer)}>Give free refill</button> : <span>{FREE_REFILL_POINTS - customer.loyalty_points} to go</span>}</td></tr>;
       }) : <tr><td colSpan={5}>{needle ? 'No customer matches that search.' : 'No customers yet. Add a name on the POS.'}</td></tr>}</tbody></table></div>
+      {moreBar(listed.length, ranked.length, () => setShown((count) => count + LOYALTY_PAGE))}
     </section>
     {pending && <div className="modal-backdrop" onClick={() => { if (!claiming) setPending(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon reward"><Gift size={22} /></div><p className="eyebrow">FREE REFILL</p><h2>Give {pending.name} 1 free refill?</h2><p className="muted">This uses 11 points. {Math.max(pending.loyalty_points - FREE_REFILL_POINTS, 0)} point{pending.loyalty_points - FREE_REFILL_POINTS === 1 ? '' : 's'} will stay on the account.</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPending(null)} disabled={claiming}>Cancel</button><button type="button" className="primary-button" onClick={() => void giveFreeRefill()} disabled={claiming}>{claiming ? 'Saving...' : 'Give 1 free refill'}</button></div></div></div>}
   </>;
@@ -1061,15 +1071,27 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
   const removeCustomer = async () => {
     if (!pendingDelete) return;
     const customer = pendingDelete;
+    const open = borrowed.filter((item) => item.customer_id === customer.id && !item.returned_at);
     setDeleting(true);
+    if (open.length) {
+      const stamp = new Date().toISOString();
+      const { error: returnError } = await supabase.from('station_borrowed_containers').update({ returned_at: stamp }).in('id', open.map((item) => item.id));
+      if (returnError) {
+        setDeleting(false);
+        setToast('Borrowed containers could not be returned, so the customer was kept.');
+        return;
+      }
+      setBorrowed((current) => current.map((item) => item.customer_id === customer.id && !item.returned_at ? { ...item, returned_at: stamp } : item));
+    }
     const { error } = await supabase.from('station_customers').delete().eq('id', customer.id);
     setDeleting(false);
-    if (error) { setToast('Customer could not be removed.'); return; }
+    if (error) { setToast(open.length ? 'Containers were marked as returned, but the customer could not be removed.' : 'Customer could not be removed.'); return; }
     setCustomers(customers.filter((item) => item.id !== customer.id));
     setSales(sales.map((sale) => sale.customer_id === customer.id ? { ...sale, customer_id: null } : sale));
     if (historyCustomer?.id === customer.id) setHistoryCustomer(null);
+    if (returnCustomer?.id === customer.id) setReturnCustomer(null);
     setPendingDelete(null);
-    setToast(`${customer.name} was removed.`);
+    setToast(open.length ? `${customer.name} was removed. ${open.length} borrowed container${open.length === 1 ? '' : 's'} marked as returned.` : `${customer.name} was removed.`);
   };
   const markPaid = async (sale: Sale) => {
     if (!historyCustomer || payingId) return;
@@ -1144,7 +1166,7 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
     {isOpen && <div className="modal-backdrop" onClick={closeForm}><form className="product-modal" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveCustomer(); }}><p className="eyebrow">{editingId ? 'EDIT CUSTOMER' : 'NEW CUSTOMER'}</p><h2>{editingId ? 'Edit customer' : 'Add a customer'}</h2><p className="muted">{editingId ? 'Update the name, email, contact number, or address. Loyalty points stay the same.' : 'They can earn points the next time you record a paid refill under this name. Email, contact number, and address are optional.'}</p><div className="product-form"><label className="product-span">Customer name<input value={name} onChange={(event) => { setName(event.target.value); setFormError(''); }} placeholder="Juan Cruz" /></label>{formError && <p className="auth-alert" role="alert">{formError}</p>}<label className="product-span">Email <em>optional</em><input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setFormError(''); }} placeholder="name@email.com" /></label><label className="product-span">Contact no. <em>optional</em><input value={phone} onChange={(event) => { setPhone(event.target.value); setFormError(''); }} inputMode="tel" placeholder="09xxxxxxxxx" /></label><label className="product-span">Address <em>optional</em><input value={address} onChange={(event) => { setAddress(event.target.value); setFormError(''); }} placeholder="Street, barangay, city" /></label></div><div className="modal-actions"><button type="button" className="outline-button" onClick={closeForm} disabled={saving}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving...' : editingId ? 'Save changes' : 'Save customer'}</button></div></form></div>}
     {historyCustomer && <div className="modal-backdrop" onClick={() => setHistoryCustomer(null)}><div className="product-modal history-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER HISTORY</p><h2>{historyCustomer.name}</h2><p className="muted">{historyCustomer.email || 'No email'} · {historyCustomer.phone || 'No contact number'} · {historyCustomer.address || 'No address'}</p>{historyLoading ? <div className="empty-state">Loading orders...</div> : historyOrders.length ? <div className="history-list">{historyOrders.map((sale) => <div className="history-order" key={sale.id}><div><strong>{orderStamp(sale.created_at)}</strong><span>{linesFor(sale.id) || 'Items not recorded'}</span></div><strong className="history-total">{money(Number(sale.total))}</strong><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span>{isUnpaid(sale) && <button type="button" className="primary-button history-pay" onClick={() => void markPaid(sale)} disabled={payingId === sale.id}>{payingId === sale.id ? 'Saving...' : 'Mark as paid'}</button>}</div>)}</div> : <div className="empty-state">No orders yet for this customer.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setHistoryCustomer(null)}>Close</button></div></div></div>}
     {returnCustomer && <div className="modal-backdrop" onClick={() => { if (!returning) setReturnCustomer(null); }}><div className="product-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">BORROWED CONTAINERS</p><h2>{returnCustomer.name}</h2><p className="muted">Select the codes to return, or return all of them.</p>{returnOpen.length ? <div className="return-list">{returnOpen.map((item) => <label className="return-item" key={item.id}><input type="checkbox" checked={selectedReturns.includes(item.id)} onChange={() => toggleReturn(item.id)} />{item.container_code}</label>)}</div> : <div className="empty-state">No borrowed containers left.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setReturnCustomer(null)} disabled={returning}>Cancel</button><button type="button" className="outline-button" onClick={() => void markReturned(selectedReturns)} disabled={returning || !selectedReturns.length}>{returning ? 'Saving...' : 'Return selected'}</button><button type="button" className="primary-button" onClick={() => void markReturned(returnOpen.map((item) => item.id))} disabled={returning || !returnOpen.length}>Return all</button></div></div></div>}
-    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">REMOVE CUSTOMER</p><h2>Remove {pendingDelete.name}?</h2><p className="muted">They leave the customer list and their loyalty points. Past orders stay in sales.</p><div className="delete-customer-card"><div className="customer-avatar large">{pendingDelete.name.slice(0, 2).toUpperCase()}</div><div><strong>{pendingDelete.name}</strong><span>{pendingDelete.phone || 'No contact number'}</span></div></div><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeCustomer()} disabled={deleting}>{deleting ? 'Removing...' : 'Remove customer'}</button></div></div></div>}
+    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">REMOVE CUSTOMER</p><h2>Remove {pendingDelete.name}?</h2><p className="muted">They leave the customer list and their loyalty points. Past orders stay in sales.{borrowed.some((item) => item.customer_id === pendingDelete.id && !item.returned_at) ? ' Containers they still have out are marked as returned.' : ''}</p><div className="delete-customer-card"><div className="customer-avatar large">{pendingDelete.name.slice(0, 2).toUpperCase()}</div><div><strong>{pendingDelete.name}</strong><span>{pendingDelete.phone || 'No contact number'}</span></div></div><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeCustomer()} disabled={deleting}>{deleting ? 'Removing...' : 'Remove customer'}</button></div></div></div>}
   </>;
 }
 
