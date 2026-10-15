@@ -15,6 +15,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MoreHorizontal,
   Package,
   Plus,
   Receipt,
@@ -34,7 +35,7 @@ import { stationLogo } from '@/lib/logo';
 import { supabase } from '@/lib/supabase';
 import { AuthLoading, AuthPage } from '@/components/AuthPage';
 
-type View = 'Overview' | 'POS' | 'Inventory' | 'Sales & Analytics' | 'Loyalty Points' | 'Customer List' | 'Expenses' | 'Settings';
+type View = 'Overview' | 'POS' | 'Inventory' | 'Containers' | 'Sales & Analytics' | 'Loyalty Points' | 'Customer List' | 'Expenses' | 'Settings';
 type SettingsSection = 'general' | 'account' | 'notifications';
 type IconType = typeof LayoutDashboard;
 type Product = { id: string; name: string; category: string; unit: string; price: number; stock: number; reorder_level: number; active: boolean; image_url: string | null; earns_points?: boolean | null };
@@ -43,12 +44,14 @@ type SaleLine = { sale_id: string; product_name: string; quantity: number; produ
 type CartItem = Product & { quantity: number };
 type Sale = { id: string; total: number; payment_method: string; status: string; created_at: string; customer_id: string | null; cash_received: number | null; change_amount: number | null };
 type BorrowedContainer = { id: string; customer_id: string; sale_id: string | null; container_code: string; borrowed_at: string; returned_at: string | null };
+type StationContainer = { id: string; code: string; created_at: string };
 type Expense = { id: string; title: string; category: string; amount: number; expense_date: string; notes: string | null };
 
 const navItems: { label: View; icon: IconType }[] = [
   { label: 'Overview', icon: LayoutDashboard },
   { label: 'POS', icon: ShoppingCart },
   { label: 'Inventory', icon: Package },
+  { label: 'Containers', icon: Boxes },
   { label: 'Sales & Analytics', icon: BarChart3 },
   { label: 'Loyalty Points', icon: Sparkles },
   { label: 'Customer List', icon: Users },
@@ -60,6 +63,7 @@ const viewSlugs: Record<View, string> = {
   Overview: 'overview',
   POS: 'pos',
   Inventory: 'inventory',
+  Containers: 'containers',
   'Sales & Analytics': 'sales',
   'Loyalty Points': 'loyalty',
   'Customer List': 'customers',
@@ -234,6 +238,8 @@ function StationWorkspace({ session }: { session: Session }) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [borrowed, setBorrowed] = useState<BorrowedContainer[]>([]);
+  const [containers, setContainers] = useState<StationContainer[]>([]);
+  const [containersReady, setContainersReady] = useState(true);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -251,12 +257,13 @@ function StationWorkspace({ session }: { session: Session }) {
 
   useEffect(() => {
     const loadData = async () => {
-      const [productResult, customerResult, saleResult, expenseResult, borrowedResult] = await Promise.all([
+      const [productResult, customerResult, saleResult, expenseResult, borrowedResult, containerResult] = await Promise.all([
         supabase.from('station_products').select('*').eq('active', true).order('name'),
         supabase.from('station_customers').select('*').order('total_spent', { ascending: false }),
         supabase.from('station_sales').select('id,total,payment_method,status,created_at,customer_id,cash_received,change_amount').order('created_at', { ascending: false }),
         supabase.from('station_expenses').select('id,title,category,amount,expense_date,notes').order('expense_date', { ascending: false }),
         supabase.from('station_borrowed_containers').select('id,customer_id,sale_id,container_code,borrowed_at,returned_at').order('borrowed_at', { ascending: false }),
+        supabase.from('station_containers').select('id,code,created_at').order('code'),
       ]);
       setProducts((productResult.data ?? []).map(normalizeProduct));
       setCustomers((customerResult.data ?? []).map(normalizeCustomer));
@@ -268,6 +275,8 @@ function StationWorkspace({ session }: { session: Session }) {
       }
       setExpenses(expenseResult.data ?? []);
       setBorrowed(borrowedResult.data ?? []);
+      if (containerResult.error && /station_containers|schema cache/i.test(containerResult.error.message)) setContainersReady(false);
+      else setContainers((containerResult.data ?? []) as StationContainer[]);
     };
     void loadData();
   }, []);
@@ -319,6 +328,17 @@ function StationWorkspace({ session }: { session: Session }) {
     if (!cart.length) return false;
     const name = customerName.trim();
     const codes = [...new Set(borrowedCodes.map((code) => code.trim()).filter(Boolean))];
+    const storedCodes = codes.map((code) => containers.find((item) => item.code.toLowerCase() === code.toLowerCase())?.code ?? code);
+    const unknownCodes = codes.filter((code) => !containers.some((item) => item.code.toLowerCase() === code.toLowerCase()));
+    const alreadyOut = storedCodes.filter((code) => borrowed.some((item) => !item.returned_at && item.container_code.toLowerCase() === code.toLowerCase()));
+    if (unknownCodes.length) {
+      setToast(containersReady ? 'Add the container code on the Containers page before borrowing it.' : 'Run the container SQL in Supabase, then add the code on the Containers page.');
+      return false;
+    }
+    if (alreadyOut.length) {
+      setToast(`${alreadyOut.join(', ')} is already borrowed.`);
+      return false;
+    }
     if (codes.length && !name) {
       setToast('Add a customer name so the borrowed container can be tracked.');
       return false;
@@ -373,7 +393,7 @@ function StationWorkspace({ session }: { session: Session }) {
     const { error: itemError } = await supabase.from('station_sale_items').insert(cart.map((item) => { const freeUnits = offer.freeById.get(item.id) ?? 0; return { sale_id: data.id, product_id: item.id, product_name: item.name, quantity: item.quantity, unit_price: item.price, line_total: item.price * (item.quantity - freeUnits) }; }));
     let borrowNote = '';
     if (codes.length && nextCustomer) {
-      const { data: borrowedRows, error: borrowError } = await supabase.from('station_borrowed_containers').insert(codes.map((code) => ({ customer_id: nextCustomer.id, sale_id: data.id, container_code: code, borrowed_at: stamp }))).select('id,customer_id,sale_id,container_code,borrowed_at,returned_at');
+      const { data: borrowedRows, error: borrowError } = await supabase.from('station_borrowed_containers').insert(storedCodes.map((code) => ({ customer_id: nextCustomer.id, sale_id: data.id, container_code: code, borrowed_at: stamp }))).select('id,customer_id,sale_id,container_code,borrowed_at,returned_at');
       if (borrowError || !borrowedRows) borrowNote = /station_borrowed_containers|schema cache/i.test(borrowError?.message ?? '') ? ' Run the borrowed-container SQL in Supabase so the codes are saved.' : /duplicate|unique/i.test(borrowError?.message ?? '') ? ' One of those container codes is already borrowed.' : ' Borrowed containers could not be recorded.';
       else {
         setBorrowed((current) => [...borrowedRows, ...current]);
@@ -433,8 +453,9 @@ function StationWorkspace({ session }: { session: Session }) {
 
   const renderView = () => {
     switch (activeView) {
-      case 'POS': return <POSView products={filteredProducts} customers={customers} sales={sales} cart={cart} addToCart={addToCart} updateCartQuantity={updateCartQuantity} checkout={checkout} />;
+      case 'POS': return <POSView products={filteredProducts} customers={customers} sales={sales} containers={containers} borrowed={borrowed} cart={cart} addToCart={addToCart} updateCartQuantity={updateCartQuantity} checkout={checkout} />;
       case 'Inventory': return <InventoryView products={products} search={search} setSearch={setSearch} setProducts={setProducts} setCart={setCart} setToast={setToast} />;
+      case 'Containers': return <ContainersView containers={containers} setContainers={setContainers} containersReady={containersReady} customers={customers} borrowed={borrowed} setBorrowed={setBorrowed} setToast={setToast} />;
       case 'Sales & Analytics': return <AnalyticsView sales={sales} customers={customers} borrowed={borrowed} setToast={setToast} />;
       case 'Loyalty Points': return <LoyaltyView customers={customers} sales={sales} setCustomers={setCustomers} setToast={setToast} setActiveView={setActiveView} />;
       case 'Customer List': return <CustomersView customers={customers} products={products} sales={sales} borrowed={borrowed} setBorrowed={setBorrowed} setCustomers={setCustomers} setSales={setSales} setToast={setToast} />;
@@ -474,7 +495,7 @@ function StationWorkspace({ session }: { session: Session }) {
       </aside>
       <main className="main-area">
         <header className="topbar"><button className="mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="Open menu"><Menu size={21} /></button><div className="breadcrumb"><span>Workspace</span><span>/</span><strong>{activeView}</strong></div><div className="topbar-actions"><div className="date-chip"><Gauge size={15} /> {todayLabel}</div><button className="icon-button" aria-label="Low stock alerts" onClick={() => { if (notify.lowStock && lowStockItems.length) setStockAlertOpen(true); }}><Bell size={18} />{notify.lowStock && lowStockItems.length > 0 && <i />}</button><div className="top-avatar">{ownerInitials}</div></div></header>
-        <div className="content"><div className="page-heading"><div><p className="eyebrow">GOOD MORNING, {ownerFirst} <span>✦</span></p><h1>{activeView === 'Overview' ? 'Here’s your station at a glance.' : activeView === 'Settings' ? settingsCopy[settingsSection].title : activeView}</h1><p className="muted">{activeView === 'Settings' ? settingsCopy[settingsSection].blurb : 'Keep your operations flowing and your customers refreshed.'}</p></div>{activeView === 'Overview' && <button className="primary-button" onClick={() => setActiveView('POS')}><Plus size={18} /> New sale</button>}</div>{renderView()}</div>
+        <div className="content"><div className="page-heading"><div><p className="eyebrow">GOOD MORNING, {ownerFirst} <span>✦</span></p><h1>{activeView === 'Overview' ? 'Here’s your station at a glance.' : activeView === 'Settings' ? settingsCopy[settingsSection].title : activeView}</h1><p className="muted">{activeView === 'Settings' ? settingsCopy[settingsSection].blurb : activeView === 'Containers' ? 'Add every container code here. Borrowed ones show the customer and can be marked returned.' : 'Keep your operations flowing and your customers refreshed.'}</p></div>{activeView === 'Overview' && <button className="primary-button" onClick={() => setActiveView('POS')}><Plus size={18} /> New sale</button>}</div>{renderView()}</div>
       </main>
       {stockAlertOpen && lowStockItems.length > 0 && <div className="modal-backdrop" onClick={dismissStockAlert}><div className="product-modal confirm-modal stock-alert" onClick={(event) => event.stopPropagation()}><div className="confirm-icon stock"><Package size={22} /></div><p className="eyebrow">LOW STOCK</p><h2>{lowStockItems.length} item{lowStockItems.length === 1 ? '' : 's'} at {LOW_STOCK_LEVEL} or below.</h2><p className="muted">Restock these before they run out. This reminder shows once a day.</p><ul className="stock-alert-list">{lowStockItems.map((product) => <li key={product.id}><strong>{product.name}</strong><span>{product.stock} left</span></li>)}</ul><div className="modal-actions"><button type="button" className="outline-button" onClick={dismissStockAlert}>Got it</button><button type="button" className="primary-button" onClick={() => { dismissStockAlert(); setActiveView('Inventory'); }}>Check inventory</button></div></div></div>}
       {toast && <div className="toast"><span>✓</span>{toast}</div>}
@@ -519,12 +540,14 @@ function OverviewView({ sales, products, customers, expenses, borrowed, lowStock
 
 function PanelHeader({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) { return <div className="panel-header"><h2>{title}</h2>{action && <button onClick={onAction}>{action} <span>→</span></button>}</div>; }
 
-function POSView({ products, customers, sales, cart, addToCart, updateCartQuantity, checkout }: { products: Product[]; customers: Customer[]; sales: Sale[]; cart: CartItem[]; addToCart: (product: Product) => void; updateCartQuantity: (id: string, delta: number) => void; checkout: (paid: boolean, customerName: string, borrowedCodes: string[], tendered?: number | null, orderDate?: string) => Promise<boolean> }) {
+function POSView({ products, customers, sales, containers, borrowed, cart, addToCart, updateCartQuantity, checkout }: { products: Product[]; customers: Customer[]; sales: Sale[]; containers: StationContainer[]; borrowed: BorrowedContainer[]; cart: CartItem[]; addToCart: (product: Product) => void; updateCartQuantity: (id: string, delta: number) => void; checkout: (paid: boolean, customerName: string, borrowedCodes: string[], tendered?: number | null, orderDate?: string) => Promise<boolean> }) {
   const [category, setCategory] = useState('All items');
   const [customerName, setCustomerName] = useState('');
   const [nameFocused, setNameFocused] = useState(false);
   const [cashInput, setCashInput] = useState('');
   const [borrowDraft, setBorrowDraft] = useState('');
+  const [borrowFocused, setBorrowFocused] = useState(false);
+  const [borrowHint, setBorrowHint] = useState('');
   const [borrowedCodes, setBorrowedCodes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [pickedDate, setPickedDate] = useState<string | null>(null);
@@ -549,26 +572,41 @@ function POSView({ products, customers, sales, cart, addToCart, updateCartQuanti
   const change = cashReady ? Math.round((cash - total) * 100) / 100 : 0;
   const cashCovers = cashReady && change >= 0;
   const needsBorrower = borrowedCodes.length > 0 || borrowDraft.trim().length > 0;
+  const openContainerCodes = new Set(borrowed.filter((item) => !item.returned_at).map((item) => item.container_code.toLowerCase()));
+  const borrowQuery = borrowDraft.trim().toLowerCase();
+  const borrowSuggestions = borrowQuery ? containers.filter((item) => item.code.toLowerCase().includes(borrowQuery) && !borrowedCodes.some((code) => code.toLowerCase() === item.code.toLowerCase())).sort((a, b) => Number(!a.code.toLowerCase().startsWith(borrowQuery)) - Number(!b.code.toLowerCase().startsWith(borrowQuery)) || a.code.localeCompare(b.code)).slice(0, 6) : [];
+  const showBorrowSuggestions = borrowFocused && borrowSuggestions.length > 0;
+  const resolveContainer = (value: string, existing: string[]) => {
+    const typedCode = value.trim();
+    if (!typedCode) return { code: null as string | null, blocked: false };
+    const registered = containers.find((item) => item.code.toLowerCase() === typedCode.toLowerCase());
+    if (!registered) { setBorrowHint('Add this code on the Containers page first.'); return { code: null, blocked: true }; }
+    if (openContainerCodes.has(registered.code.toLowerCase())) { setBorrowHint(`${registered.code} is already borrowed.`); return { code: null, blocked: true }; }
+    if (existing.some((item) => item.toLowerCase() === registered.code.toLowerCase())) return { code: null, blocked: false };
+    setBorrowHint('');
+    return { code: registered.code, blocked: false };
+  };
   const today = todayInput();
   const orderDate = pickedDate && pickedDate <= today ? pickedDate : today;
   const orderIsToday = orderDate === today;
   const submit = async (paid: boolean) => {
     if (paid && !cashCovers) return;
-    const draft = borrowDraft.trim();
-    const codes = draft && !borrowedCodes.some((code) => code.toLowerCase() === draft.toLowerCase()) ? [...borrowedCodes, draft] : borrowedCodes;
+    const result = resolveContainer(borrowDraft, borrowedCodes);
+    if (result.blocked) return;
+    const codes = result.code ? [...borrowedCodes, result.code] : borrowedCodes;
     setSaving(true);
     const ok = await checkout(paid, typed, codes, paid ? cash : null, orderDate);
     setSaving(false);
-    if (ok) { setCustomerName(''); setCashInput(''); setBorrowDraft(''); setBorrowedCodes([]); setPickedDate(null); }
+    if (ok) { setCustomerName(''); setCashInput(''); setBorrowDraft(''); setBorrowHint(''); setBorrowedCodes([]); setPickedDate(null); }
   };
-  const addBorrowed = () => {
-    const code = borrowDraft.trim();
-    if (!code) return;
-    if (borrowedCodes.some((item) => item.toLowerCase() === code.toLowerCase())) { setBorrowDraft(''); return; }
-    setBorrowedCodes((current) => [...current, code]);
+  const addBorrowed = (value?: string) => {
+    const result = resolveContainer(value ?? borrowDraft, borrowedCodes);
+    if (!result.code) { if (!result.blocked) setBorrowDraft(''); return; }
+    setBorrowedCodes((current) => [...current, result.code!]);
     setBorrowDraft('');
+    setBorrowFocused(false);
   };
-  return <div className="pos-layout"><section className="panel product-panel"><div className="pos-toolbar"><div className="segmented">{categories.map((item) => <button key={item} className={category === item ? 'selected' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><span>{visible.length} products</span></div>{splitRows ? <div className="product-groups"><div className="product-grid">{refillProducts.map(productCard)}</div><div className="product-grid product-grid-others">{otherProducts.map(productCard)}</div></div> : <div className="product-grid">{visible.map(productCard)}</div>}</section><aside className="panel cart-panel"><div className="cart-heading"><div><p className="eyebrow">CURRENT ORDER</p><h2>New sale</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</span></div>{offer.free > 0 && <div className="free-banner" role="status"><strong>{offer.free} FREE</strong><span>{offer.free * FREE_REFILL_POINTS} paid + {offer.free} free</span></div>}{cart.length ? <div className="cart-items">{cart.map((item) => <div className={`cart-row${(offer.freeById.get(item.id) ?? 0) > 0 ? ' has-free' : ''}`} key={item.id}><div className="cart-thumb">{item.image_url ? <img src={item.image_url} alt="" /> : <Droplets size={15} />}</div><div className="cart-product"><strong>{item.name}</strong><span>{money(item.price)} / {item.unit}</span>{(offer.freeById.get(item.id) ?? 0) > 0 && <em className="cart-free">{offer.freeById.get(item.id)} FREE</em>}</div><div className="quantity"><button onClick={() => updateCartQuantity(item.id, -1)}>−</button><span>{item.quantity}</span><button onClick={() => updateCartQuantity(item.id, 1)}>+</button></div><strong>{money(item.price * (item.quantity - (offer.freeById.get(item.id) ?? 0)))}</strong></div>)}</div> : <div className="empty-cart"><ShoppingCart size={28} /><strong>Your order is empty</strong><span>Select a product to begin</span></div>}<div className="customer-field"><span className="customer-label">Customer name <em className={needsBorrower ? 'required' : ''}>{needsBorrower ? 'Required' : 'Optional'}</em></span><input value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={() => setNameFocused(true)} onBlur={() => setNameFocused(false)} placeholder="Enter Customer's name (Optional)" autoComplete="off" />{showSuggestions && <div className="customer-suggest">{suggestions.map((item) => { const name = item.name.trim(); const index = name.toLowerCase().indexOf(query); return <button type="button" key={item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { setCustomerName(name); setNameFocused(false); }}><span>{index >= 0 ? <>{name.slice(0, index)}<mark>{name.slice(index, index + query.length)}</mark>{name.slice(index + query.length)}</> : name}</span><small>{item.loyalty_points}/11 pts</small></button>; })}</div>}</div>{typed && <p className={`customer-hint ${owed ? 'warn' : ''}`}>{match ? `${match.name} · ${match.loyalty_points}/11 points · ${match.refill_count} refills${owed ? ` · Unpaid ${money(owed)}` : ''}` : 'New customer. Completing this order saves the name to the customer list.'}</p>}<div className="borrow-box">{needsBorrower && !typed && <p className="customer-hint warn">Enter the customer name. It is required for a borrowed container.</p>}<span className="customer-label">Record borrowed container</span><div className="borrow-add"><input value={borrowDraft} onChange={(event) => setBorrowDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addBorrowed(); } }} placeholder="Container code" /><button type="button" className="outline-button" onClick={addBorrowed}>Add</button></div>{borrowedCodes.length > 0 && <div className="borrow-list">{borrowedCodes.map((code) => <span className="borrow-chip" key={code}>{code}<button type="button" onClick={() => setBorrowedCodes((current) => current.filter((item) => item !== code))} aria-label={`Remove ${code}`}>×</button></span>)}</div>}</div><div className="cart-summary"><div><span>Subtotal</span><strong>{money(subtotal)}</strong></div><div className={offer.free ? 'free-line' : ''}><span>{offer.free ? `Free refill · ${offer.free}` : 'Discount'}</span><strong>{offer.free ? `−${money(offer.discount)}` : money(0)}</strong></div><div className="total-line"><span>Total</span><strong>{money(total)}</strong></div><label className="customer-field order-date-field">Order date<input type="date" value={orderDate} max={today} onChange={(event) => { const value = event.target.value; setPickedDate(!value || value > today ? null : value); }} /></label>{!orderIsToday && <p className="customer-hint">This order will be recorded on {new Date(`${orderDate}T12:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}.</p>}<label className="customer-field cash-field">Enter cash<input value={cashInput} onChange={(event) => setCashInput(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label><div className={`change-line ${cashReady && !cashCovers ? 'short' : ''}`}><span>Change</span><strong>{cashReady && !cashCovers ? 'Short' : money(Math.max(change, 0))}</strong></div>{cashReady && !cashCovers && <p className="cash-short">Short by {money(Math.abs(change))}</p>}<p className="points-note">{offer.free ? `${offer.free} free on this order. Claimed now, so no points are added.` : points ? (typed ? `${points} point${points === 1 ? '' : 's'} if this order is paid` : `Add a customer name to keep these ${points} point${points === 1 ? '' : 's'}`) : 'Only products checked for loyalty earn points.'}</p><div className="checkout-actions"><button className="checkout-button" type="button" onClick={() => void submit(true)} disabled={!cart.length || saving || !cashCovers || (needsBorrower && !typed)}>{saving ? 'Saving...' : 'Complete as paid'}</button><button className="unpaid-button" type="button" onClick={() => void submit(false)} disabled={!cart.length || saving || (needsBorrower && !typed)}>Complete as unpaid</button></div><p className="secure-note">Every 12 loyalty refills is 11 paid and 1 free. Unpaid orders do not earn points.</p></div></aside></div>;
+  return <div className="pos-layout"><section className="panel product-panel"><div className="pos-toolbar"><div className="segmented">{categories.map((item) => <button key={item} className={category === item ? 'selected' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><span>{visible.length} products</span></div>{splitRows ? <div className="product-groups"><div className="product-grid">{refillProducts.map(productCard)}</div><div className="product-grid product-grid-others">{otherProducts.map(productCard)}</div></div> : <div className="product-grid">{visible.map(productCard)}</div>}</section><aside className="panel cart-panel"><div className="cart-heading"><div><p className="eyebrow">CURRENT ORDER</p><h2>New sale</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</span></div>{offer.free > 0 && <div className="free-banner" role="status"><strong>{offer.free} FREE</strong><span>{offer.free * FREE_REFILL_POINTS} paid + {offer.free} free</span></div>}{cart.length ? <div className="cart-items">{cart.map((item) => <div className={`cart-row${(offer.freeById.get(item.id) ?? 0) > 0 ? ' has-free' : ''}`} key={item.id}><div className="cart-thumb">{item.image_url ? <img src={item.image_url} alt="" /> : <Droplets size={15} />}</div><div className="cart-product"><strong>{item.name}</strong><span>{money(item.price)} / {item.unit}</span>{(offer.freeById.get(item.id) ?? 0) > 0 && <em className="cart-free">{offer.freeById.get(item.id)} FREE</em>}</div><div className="quantity"><button onClick={() => updateCartQuantity(item.id, -1)}>−</button><span>{item.quantity}</span><button onClick={() => updateCartQuantity(item.id, 1)}>+</button></div><strong>{money(item.price * (item.quantity - (offer.freeById.get(item.id) ?? 0)))}</strong></div>)}</div> : <div className="empty-cart"><ShoppingCart size={28} /><strong>Your order is empty</strong><span>Select a product to begin</span></div>}<div className="customer-field"><span className="customer-label">Customer name <em className={needsBorrower ? 'required' : ''}>{needsBorrower ? 'Required' : 'Optional'}</em></span><input value={customerName} onChange={(event) => setCustomerName(event.target.value)} onFocus={() => setNameFocused(true)} onBlur={() => setNameFocused(false)} placeholder="Enter Customer's name (Optional)" autoComplete="off" />{showSuggestions && <div className="customer-suggest">{suggestions.map((item) => { const name = item.name.trim(); const index = name.toLowerCase().indexOf(query); return <button type="button" key={item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { setCustomerName(name); setNameFocused(false); }}><span>{index >= 0 ? <>{name.slice(0, index)}<mark>{name.slice(index, index + query.length)}</mark>{name.slice(index + query.length)}</> : name}</span><small>{item.loyalty_points}/11 pts</small></button>; })}</div>}</div>{typed && <p className={`customer-hint ${owed ? 'warn' : ''}`}>{match ? `${match.name} · ${match.loyalty_points}/11 points · ${match.refill_count} refills${owed ? ` · Unpaid ${money(owed)}` : ''}` : 'New customer. Completing this order saves the name to the customer list.'}</p>}<div className="borrow-box">{needsBorrower && !typed && <p className="customer-hint warn">Enter the customer name. It is required for a borrowed container.</p>}<span className="customer-label">Record borrowed container</span><div className="borrow-add"><div className="borrow-code"><input value={borrowDraft} onChange={(event) => { setBorrowDraft(event.target.value); setBorrowHint(''); }} onFocus={() => setBorrowFocused(true)} onBlur={() => setBorrowFocused(false)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addBorrowed(); } }} placeholder="Enter container's code" autoComplete="off" />{showBorrowSuggestions && <div className="customer-suggest">{borrowSuggestions.map((item) => { const label = item.code; const index = label.toLowerCase().indexOf(borrowQuery); const out = openContainerCodes.has(label.toLowerCase()); return <button type="button" key={item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => addBorrowed(label)}><span>{index >= 0 ? <>{label.slice(0, index)}<mark>{label.slice(index, index + borrowQuery.length)}</mark>{label.slice(index + borrowQuery.length)}</> : label}</span><small>{out ? 'Borrowed' : 'Available'}</small></button>; })}</div>}</div><button type="button" className="outline-button" onClick={() => addBorrowed()}>Add</button></div>{borrowHint && <p className="customer-hint warn">{borrowHint}</p>}{borrowedCodes.length > 0 && <div className="borrow-list">{borrowedCodes.map((code) => <span className="borrow-chip" key={code}>{code}<button type="button" onClick={() => setBorrowedCodes((current) => current.filter((item) => item !== code))} aria-label={`Remove ${code}`}>×</button></span>)}</div>}</div><div className="cart-summary"><div><span>Subtotal</span><strong>{money(subtotal)}</strong></div><div className={offer.free ? 'free-line' : ''}><span>{offer.free ? `Free refill · ${offer.free}` : 'Discount'}</span><strong>{offer.free ? `−${money(offer.discount)}` : money(0)}</strong></div><div className="total-line"><span>Total</span><strong>{money(total)}</strong></div><label className="customer-field order-date-field">Order date<input type="date" value={orderDate} max={today} onChange={(event) => { const value = event.target.value; setPickedDate(!value || value > today ? null : value); }} /></label>{!orderIsToday && <p className="customer-hint">This order will be recorded on {new Date(`${orderDate}T12:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}.</p>}<label className="customer-field cash-field">Enter cash<input value={cashInput} onChange={(event) => setCashInput(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label><div className={`change-line ${cashReady && !cashCovers ? 'short' : ''}`}><span>Change</span><strong>{cashReady && !cashCovers ? 'Short' : money(Math.max(change, 0))}</strong></div>{cashReady && !cashCovers && <p className="cash-short">Short by {money(Math.abs(change))}</p>}<p className="points-note">{offer.free ? `${offer.free} free on this order. Claimed now, so no points are added.` : points ? (typed ? `${points} point${points === 1 ? '' : 's'} if this order is paid` : `Add a customer name to keep these ${points} point${points === 1 ? '' : 's'}`) : 'Only products checked for loyalty earn points.'}</p><div className="checkout-actions"><button className="checkout-button" type="button" onClick={() => void submit(true)} disabled={!cart.length || saving || !cashCovers || (needsBorrower && !typed)}>{saving ? 'Saving...' : 'Complete as paid'}</button><button className="unpaid-button" type="button" onClick={() => void submit(false)} disabled={!cart.length || saving || (needsBorrower && !typed)}>Complete as unpaid</button></div><p className="secure-note">Every 12 loyalty refills is 11 paid and 1 free. Unpaid orders do not earn points.</p></div></aside></div>;
 }
 
 function InventoryView({ products, search, setSearch, setProducts, setCart, setToast }: { products: Product[]; search: string; setSearch: (value: string) => void; setProducts: (items: Product[]) => void; setCart: (items: CartItem[] | ((current: CartItem[]) => CartItem[])) => void; setToast: (message: string) => void }) {
@@ -959,6 +997,13 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
   const [returnCustomer, setReturnCustomer] = useState<Customer | null>(null);
   const [selectedReturns, setSelectedReturns] = useState<string[]>([]);
   const [returning, setReturning] = useState(false);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!menuId) return;
+    const close = () => setMenuId(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuId]);
   const [formError, setFormError] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const openAdd = () => { setEditingId(null); setName(''); setEmail(''); setPhone(''); setAddress(''); setFormError(''); setIsOpen(true); };
@@ -1090,7 +1135,7 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
               <td data-label="Contact no.">{customer.phone || '—'}</td>
               <td data-label="Address">{customer.address || '—'}</td>
               <td data-label="Last order">{latest ? `${shortDate(latest.created_at)} · ${money(Number(latest.total))}` : 'No orders yet'}</td>
-              <td className="row-actions" data-label="Actions">{borrowedOpen.length > 0 && <button type="button" className="outline-button" onClick={() => openReturn(customer)}>Return</button>}<button type="button" className="outline-button" onClick={() => openEdit(customer)}><Pencil size={14} /> Edit</button><button type="button" className="outline-button" onClick={() => void openHistory(customer)}><Receipt size={14} /> History</button><button type="button" className="text-danger" onClick={() => setPendingDelete(customer)}><Trash2 size={14} /> Delete</button></td>
+              <td className="row-actions customer-actions" data-label="Actions"><button type="button" className="outline-button" onClick={() => { setMenuId(null); void openHistory(customer); }}><Receipt size={14} /> History</button><div className="row-menu"><button type="button" className="icon-button row-menu-button" aria-label={`More actions for ${customer.name}`} aria-expanded={menuId === customer.id} onClick={(event) => { event.stopPropagation(); setMenuId((current) => current === customer.id ? null : customer.id); }}><MoreHorizontal size={16} /></button>{menuId === customer.id && <div className="row-menu-list" onClick={(event) => event.stopPropagation()}>{borrowedOpen.length > 0 && <button type="button" onClick={() => { setMenuId(null); openReturn(customer); }}>Return</button>}<button type="button" onClick={() => { setMenuId(null); openEdit(customer); }}><Pencil size={14} /> Edit</button><button type="button" className="danger" onClick={() => { setMenuId(null); setPendingDelete(customer); }}><Trash2 size={14} /> Delete</button></div>}</div></td>
             </tr>;
           }) : <tr><td colSpan={6}>{customers.length ? 'No customers match this search.' : 'No customers yet. Add one here or enter a name on the next POS order.'}</td></tr>}</tbody>
         </table>
@@ -1100,6 +1145,114 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
     {historyCustomer && <div className="modal-backdrop" onClick={() => setHistoryCustomer(null)}><div className="product-modal history-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">ORDER HISTORY</p><h2>{historyCustomer.name}</h2><p className="muted">{historyCustomer.email || 'No email'} · {historyCustomer.phone || 'No contact number'} · {historyCustomer.address || 'No address'}</p>{historyLoading ? <div className="empty-state">Loading orders...</div> : historyOrders.length ? <div className="history-list">{historyOrders.map((sale) => <div className="history-order" key={sale.id}><div><strong>{orderStamp(sale.created_at)}</strong><span>{linesFor(sale.id) || 'Items not recorded'}</span></div><strong className="history-total">{money(Number(sale.total))}</strong><span className={`status-pill ${isUnpaid(sale) ? 'attention' : ''}`}>{isUnpaid(sale) ? 'Unpaid' : 'Paid'}</span>{isUnpaid(sale) && <button type="button" className="primary-button history-pay" onClick={() => void markPaid(sale)} disabled={payingId === sale.id}>{payingId === sale.id ? 'Saving...' : 'Mark as paid'}</button>}</div>)}</div> : <div className="empty-state">No orders yet for this customer.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setHistoryCustomer(null)}>Close</button></div></div></div>}
     {returnCustomer && <div className="modal-backdrop" onClick={() => { if (!returning) setReturnCustomer(null); }}><div className="product-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">BORROWED CONTAINERS</p><h2>{returnCustomer.name}</h2><p className="muted">Select the codes to return, or return all of them.</p>{returnOpen.length ? <div className="return-list">{returnOpen.map((item) => <label className="return-item" key={item.id}><input type="checkbox" checked={selectedReturns.includes(item.id)} onChange={() => toggleReturn(item.id)} />{item.container_code}</label>)}</div> : <div className="empty-state">No borrowed containers left.</div>}<div className="modal-actions"><button type="button" className="outline-button" onClick={() => setReturnCustomer(null)} disabled={returning}>Cancel</button><button type="button" className="outline-button" onClick={() => void markReturned(selectedReturns)} disabled={returning || !selectedReturns.length}>{returning ? 'Saving...' : 'Return selected'}</button><button type="button" className="primary-button" onClick={() => void markReturned(returnOpen.map((item) => item.id))} disabled={returning || !returnOpen.length}>Return all</button></div></div></div>}
     {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">REMOVE CUSTOMER</p><h2>Remove {pendingDelete.name}?</h2><p className="muted">They leave the customer list and their loyalty points. Past orders stay in sales.</p><div className="delete-customer-card"><div className="customer-avatar large">{pendingDelete.name.slice(0, 2).toUpperCase()}</div><div><strong>{pendingDelete.name}</strong><span>{pendingDelete.phone || 'No contact number'}</span></div></div><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeCustomer()} disabled={deleting}>{deleting ? 'Removing...' : 'Remove customer'}</button></div></div></div>}
+  </>;
+}
+
+function ContainersView({ containers, setContainers, containersReady, customers, borrowed, setBorrowed, setToast }: { containers: StationContainer[]; setContainers: (items: StationContainer[] | ((current: StationContainer[]) => StationContainer[])) => void; containersReady: boolean; customers: Customer[]; borrowed: BorrowedContainer[]; setBorrowed: (items: BorrowedContainer[] | ((current: BorrowedContainer[]) => BorrowedContainer[])) => void; setToast: (message: string) => void }) {
+  const [code, setCode] = useState('');
+  const [query, setQuery] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [returningId, setReturningId] = useState<string | null>(null);
+  const [pendingReturn, setPendingReturn] = useState<BorrowedContainer | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<StationContainer | null>(null);
+  const customerName = (id: string) => customers.find((customer) => customer.id === id)?.name || 'Unknown customer';
+  const openFor = (containerCode: string) => borrowed.find((item) => !item.returned_at && item.container_code.toLowerCase() === containerCode.toLowerCase());
+  const openBorrowed = borrowed.filter((item) => !item.returned_at);
+  const needle = query.trim().toLowerCase();
+  const matches = (containerCode: string, name: string) => !needle || containerCode.toLowerCase().includes(needle) || name.toLowerCase().includes(needle);
+  const visibleContainers = containers.filter((item) => {
+    const open = openFor(item.code);
+    return matches(item.code, open ? customerName(open.customer_id) : '');
+  });
+  const borrowedGroups = [...openBorrowed.reduce((groups, item) => {
+    const name = customerName(item.customer_id);
+    if (!matches(item.container_code, name)) return groups;
+    const group = groups.get(item.customer_id) ?? { name, items: [] as BorrowedContainer[] };
+    group.items.push(item);
+    groups.set(item.customer_id, group);
+    return groups;
+  }, new Map<string, { name: string; items: BorrowedContainer[] }>()).values()].sort((a, b) => a.name.localeCompare(b.name));
+  const addContainer = async () => {
+    const next = code.trim();
+    if (!next || saving) return;
+    if (containers.some((item) => item.code.toLowerCase() === next.toLowerCase())) {
+      setToast('That container code is already on the list.');
+      return;
+    }
+    setSaving(true);
+    const { data, error } = await supabase.from('station_containers').insert({ code: next }).select('id,code,created_at').maybeSingle();
+    setSaving(false);
+    if (error || !data) {
+      setToast(/station_containers|schema cache/i.test(error?.message ?? '') ? 'Run the container SQL in Supabase so codes can be saved.' : /duplicate|unique/i.test(error?.message ?? '') ? 'That container code is already on the list.' : 'Container could not be saved.');
+      return;
+    }
+    const saved = data as StationContainer;
+    setContainers((current) => [...current, saved].sort((a, b) => a.code.localeCompare(b.code)));
+    setCode('');
+    setToast(`${saved.code} added.`);
+  };
+  const markReturned = async (item: BorrowedContainer) => {
+    if (returningId) return;
+    setReturningId(item.id);
+    const stamp = new Date().toISOString();
+    const { error } = await supabase.from('station_borrowed_containers').update({ returned_at: stamp }).eq('id', item.id);
+    setReturningId(null);
+    if (error) { setToast('Container could not be marked as returned.'); return; }
+    setBorrowed((current) => current.map((row) => row.id === item.id ? { ...row, returned_at: stamp } : row));
+    setPendingReturn(null);
+    setToast(`${item.container_code} marked as returned.`);
+  };
+  const askDelete = (item: StationContainer) => {
+    if (openFor(item.code)) {
+      setToast(`${item.code} is borrowed. Mark it returned before deleting.`);
+      return;
+    }
+    setPendingDelete(item);
+  };
+  const removeContainer = async () => {
+    if (!pendingDelete || deletingId) return;
+    setDeletingId(pendingDelete.id);
+    const { error } = await supabase.from('station_containers').delete().eq('id', pendingDelete.id);
+    setDeletingId(null);
+    if (error) { setToast('Container could not be deleted.'); return; }
+    setContainers((current) => current.filter((row) => row.id !== pendingDelete.id));
+    setToast(`${pendingDelete.code} deleted.`);
+    setPendingDelete(null);
+  };
+  return <>
+    <section className="panel table-panel">
+      <div className="table-toolbar">
+        <div><h2>All containers</h2><p className="muted">{containers.length} code{containers.length === 1 ? '' : 's'}. These appear as suggestions when a customer borrows one at the POS.</p></div>
+        <div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code or customer" /></div>
+      </div>
+      {!containersReady && <p className="customer-hint warn">Run the container SQL in Supabase before codes can be saved.</p>}
+      <form className="container-add" onSubmit={(event) => { event.preventDefault(); void addContainer(); }}>
+        <label className="customer-field">Container code<input value={code} onChange={(event) => setCode(event.target.value)} placeholder="Enter container's code" /></label>
+        <button className="primary-button" type="submit" disabled={saving || !code.trim()}>{saving ? 'Adding...' : 'Add'}</button>
+      </form>
+      <div className="table-scroll">
+        <table className="stack-table">
+          <thead><tr><th>Code</th><th>Status</th><th /></tr></thead>
+          <tbody>{visibleContainers.length ? visibleContainers.map((item) => {
+            const open = openFor(item.code);
+            return <tr key={item.id}>
+              <td data-label="Code"><strong>{item.code}</strong></td>
+              <td data-label="Status">{open ? <span className="status-pill borrowed">Borrowed · {customerName(open.customer_id)}</span> : <span className="status-pill">Available</span>}</td>
+              <td className="row-actions" data-label="Actions"><button type="button" className="text-danger" onClick={() => askDelete(item)}><Trash2 size={14} /> Delete</button></td>
+            </tr>;
+          }) : <tr><td colSpan={3}>{containers.length ? 'No containers match this search.' : 'No containers yet. Add a code above.'}</td></tr>}</tbody>
+        </table>
+      </div>
+    </section>
+    <section className="panel table-panel container-borrowed">
+      <div className="table-toolbar">
+        <div><h2>Borrowed containers</h2><p className="muted">{openBorrowed.length} still out. One container stays in the list. Several from the same customer are grouped.</p></div>
+      </div>
+      {borrowedGroups.length ? <div className="borrow-groups">{(() => { const tones = ['green', 'blue', 'amber', 'teal', 'violet', 'rose']; let multi = 0; return borrowedGroups.map((group) => { const returnButton = (item: BorrowedContainer) => <button type="button" className="return-button" onClick={() => setPendingReturn(item)} disabled={returningId === item.id}>Mark as return</button>; if (group.items.length < 2) { const item = group.items[0]; return <div className="borrow-single" key={item.id}><strong>{item.container_code}</strong><span>{group.name}</span><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>; } const tone = tones[multi % tones.length]; multi += 1; return <section className={`borrow-group tone-${tone}`} key={group.items[0].customer_id}><h3>{group.name}<span>{group.items.length} containers</span></h3>{group.items.map((item) => <div className="borrow-group-row" key={item.id}><strong>{item.container_code}</strong><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>)}</section>; }); })()}</div> : <div className="empty-state">{openBorrowed.length ? 'No borrowed containers match this search.' : 'No borrowed containers right now.'}</div>}
+    </section>
+    {pendingReturn && <div className="modal-backdrop" onClick={() => { if (!returningId) setPendingReturn(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">RETURN CONTAINER</p><h2>Mark {pendingReturn.container_code} as returned?</h2><p className="muted">{customerName(pendingReturn.customer_id)} borrowed this container. It stays out until you confirm.</p><div className="modal-actions"><button type="button" className="danger-button" onClick={() => setPendingReturn(null)} disabled={!!returningId}>Cancel</button><button type="button" className="return-button" onClick={() => void markReturned(pendingReturn)} disabled={!!returningId}>{returningId ? 'Saving...' : 'Mark as return'}</button></div></div></div>}
+    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deletingId) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">DELETE CONTAINER</p><h2>Delete {pendingDelete.code}?</h2><p className="muted">It leaves the container list and will no longer appear as a POS suggestion.</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={!!deletingId}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeContainer()} disabled={!!deletingId}>{deletingId ? 'Deleting...' : 'Delete'}</button></div></div></div>}
   </>;
 }
 
