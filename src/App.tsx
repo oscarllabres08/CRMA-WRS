@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Boxes,
   BarChart3,
@@ -495,7 +495,7 @@ function StationWorkspace({ session }: { session: Session }) {
       </aside>
       <main className="main-area">
         <header className="topbar"><button className="mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="Open menu"><Menu size={21} /></button><div className="breadcrumb"><span>Workspace</span><span>/</span><strong>{activeView}</strong></div><div className="topbar-actions"><div className="date-chip"><Gauge size={15} /> {todayLabel}</div><button className="icon-button" aria-label="Low stock alerts" onClick={() => { if (notify.lowStock && lowStockItems.length) setStockAlertOpen(true); }}><Bell size={18} />{notify.lowStock && lowStockItems.length > 0 && <i />}</button><div className="top-avatar">{ownerInitials}</div></div></header>
-        <div className="content"><div className="page-heading"><div><p className="eyebrow">GOOD MORNING, {ownerFirst} <span>✦</span></p><h1>{activeView === 'Overview' ? 'Here’s your station at a glance.' : activeView === 'Settings' ? settingsCopy[settingsSection].title : activeView}</h1><p className="muted">{activeView === 'Settings' ? settingsCopy[settingsSection].blurb : activeView === 'Containers' ? 'Add every container code here. Borrowed ones show the customer and can be marked returned.' : 'Keep your operations flowing and your customers refreshed.'}</p></div>{activeView === 'Overview' && <button className="primary-button" onClick={() => setActiveView('POS')}><Plus size={18} /> New sale</button>}</div>{renderView()}</div>
+        <div className="content"><div className="page-heading"><div><p className="eyebrow">GOOD MORNING, {ownerFirst} <span>✦</span></p><h1>{activeView === 'Overview' ? 'Here’s your station at a glance.' : activeView === 'Settings' ? settingsCopy[settingsSection].title : activeView}</h1><p className="muted">{activeView === 'Settings' ? settingsCopy[settingsSection].blurb : activeView === 'Containers' ? 'Choose type, color, and quantity. Codes are generated in order, and borrowed ones can be marked returned.' : 'Keep your operations flowing and your customers refreshed.'}</p></div>{activeView === 'Overview' && <button className="primary-button" onClick={() => setActiveView('POS')}><Plus size={18} /> New sale</button>}</div>{renderView()}</div>
       </main>
       {stockAlertOpen && lowStockItems.length > 0 && <div className="modal-backdrop" onClick={dismissStockAlert}><div className="product-modal confirm-modal stock-alert" onClick={(event) => event.stopPropagation()}><div className="confirm-icon stock"><Package size={22} /></div><p className="eyebrow">LOW STOCK</p><h2>{lowStockItems.length} item{lowStockItems.length === 1 ? '' : 's'} at {LOW_STOCK_LEVEL} or below.</h2><p className="muted">Restock these before they run out. This reminder shows once a day.</p><ul className="stock-alert-list">{lowStockItems.map((product) => <li key={product.id}><strong>{product.name}</strong><span>{product.stock} left</span></li>)}</ul><div className="modal-actions"><button type="button" className="outline-button" onClick={dismissStockAlert}>Got it</button><button type="button" className="primary-button" onClick={() => { dismissStockAlert(); setActiveView('Inventory'); }}>Check inventory</button></div></div></div>}
       {toast && <div className="toast"><span>✓</span>{toast}</div>}
@@ -1148,23 +1148,91 @@ function CustomersView({ customers, products, sales, borrowed, setBorrowed, setC
   </>;
 }
 
+const containerTypes = [
+  { label: 'Slim', letter: 'S' },
+  { label: 'Round', letter: 'R' },
+] as const;
+const containerColors = [
+  { label: 'White', letter: 'W', swatch: '#f4f7fb' },
+  { label: 'Red', letter: 'R', swatch: '#e25b45' },
+  { label: 'Blue', letter: 'B', swatch: '#3b82d6' },
+  { label: 'Green', letter: 'G', swatch: '#3caf4a' },
+  { label: 'Yellow', letter: 'Y', swatch: '#f0c14a' },
+  { label: 'Orange', letter: 'O', swatch: '#f08a3c' },
+  { label: 'Pink', letter: 'P', swatch: '#f08ab0' },
+] as const;
+
+function ChoiceDropdown({ open, onToggle, label, mark, children }: { open: boolean; onToggle: () => void; label: string; mark: ReactNode; children: ReactNode }) {
+  return <div className="choice-menu">
+    <button type="button" className={open ? 'open' : ''} aria-expanded={open} onClick={(event) => { event.stopPropagation(); onToggle(); }}>
+      {mark}
+      <span>{label}</span>
+      <ChevronDown size={16} />
+    </button>
+    {open && <div className="choice-list" onClick={(event) => event.stopPropagation()}>{children}</div>}
+  </div>;
+}
+const CONTAINER_BATCH_LIMIT = 1000;
+const CONTAINER_PAGE = 30;
+const containerCodeOf = (prefix: string, number: number) => `${prefix}${String(number).padStart(3, '0')}`;
+const containerSequence = (codes: string[], prefix: string) => codes.reduce((max, code) => {
+  const match = code.trim().match(new RegExp(`^${prefix}(\\d+)$`, 'i'));
+  const value = match ? Number(match[1]) : 0;
+  return Number.isFinite(value) && value > max ? value : max;
+}, 0);
+const buildContainerCodes = (codes: string[], prefix: string, quantity: number) => {
+  const start = containerSequence(codes, prefix) + 1;
+  return Array.from({ length: quantity }, (_, index) => containerCodeOf(prefix, start + index));
+};
+const compareContainerCodes = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+
 function ContainersView({ containers, setContainers, containersReady, customers, borrowed, setBorrowed, setToast }: { containers: StationContainer[]; setContainers: (items: StationContainer[] | ((current: StationContainer[]) => StationContainer[])) => void; containersReady: boolean; customers: Customer[]; borrowed: BorrowedContainer[]; setBorrowed: (items: BorrowedContainer[] | ((current: BorrowedContainer[]) => BorrowedContainer[])) => void; setToast: (message: string) => void }) {
-  const [code, setCode] = useState('');
+  const [containerType, setContainerType] = useState<(typeof containerTypes)[number]['letter']>(containerTypes[0].letter);
+  const [containerColor, setContainerColor] = useState<(typeof containerColors)[number]['letter']>(containerColors[0].letter);
+  const [quantity, setQuantity] = useState('1');
+  const [openField, setOpenField] = useState<'type' | 'color' | null>(null);
   const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'All' | 'Available' | 'Borrowed'>('All');
+  const [shown, setShown] = useState(CONTAINER_PAGE);
   const [saving, setSaving] = useState(false);
   const [returningId, setReturningId] = useState<string | null>(null);
   const [pendingReturn, setPendingReturn] = useState<BorrowedContainer | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<StationContainer | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<StationContainer[] | null>(null);
+  const pickAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!openField) return;
+    const close = () => setOpenField(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [openField]);
+  useEffect(() => { setShown(CONTAINER_PAGE); }, [query, statusFilter]);
   const customerName = (id: string) => customers.find((customer) => customer.id === id)?.name || 'Unknown customer';
   const openFor = (containerCode: string) => borrowed.find((item) => !item.returned_at && item.container_code.toLowerCase() === containerCode.toLowerCase());
   const openBorrowed = borrowed.filter((item) => !item.returned_at);
   const needle = query.trim().toLowerCase();
   const matches = (containerCode: string, name: string) => !needle || containerCode.toLowerCase().includes(needle) || name.toLowerCase().includes(needle);
+  const typeChoice = containerTypes.find((item) => item.letter === containerType) ?? containerTypes[0];
+  const colorChoice = containerColors.find((item) => item.letter === containerColor) ?? containerColors[0];
+  const codePrefix = `${typeChoice.letter}${colorChoice.letter}`;
+  const quantityCount = Number(quantity);
+  const quantityOk = Number.isInteger(quantityCount) && quantityCount >= 1 && quantityCount <= CONTAINER_BATCH_LIMIT;
+  const previewCodes = quantityOk ? buildContainerCodes(containers.map((item) => item.code), codePrefix, quantityCount) : [];
   const visibleContainers = containers.filter((item) => {
     const open = openFor(item.code);
+    if (statusFilter === 'Available' && open) return false;
+    if (statusFilter === 'Borrowed' && !open) return false;
     return matches(item.code, open ? customerName(open.customer_id) : '');
-  });
+  }).sort((a, b) => compareContainerCodes(a.code, b.code));
+  const listedContainers = visibleContainers.slice(0, shown);
+  const shownCount = listedContainers.length;
+  const selectable = listedContainers.filter((item) => !openFor(item.code));
+  const pickedCount = selectable.filter((item) => selectedIds.includes(item.id)).length;
+  const allPicked = selectable.length > 0 && pickedCount === selectable.length;
+  useEffect(() => {
+    if (pickAllRef.current) pickAllRef.current.indeterminate = pickedCount > 0 && !allPicked;
+  }, [pickedCount, allPicked]);
   const borrowedGroups = [...openBorrowed.reduce((groups, item) => {
     const name = customerName(item.customer_id);
     if (!matches(item.container_code, name)) return groups;
@@ -1174,23 +1242,28 @@ function ContainersView({ containers, setContainers, containersReady, customers,
     return groups;
   }, new Map<string, { name: string; items: BorrowedContainer[] }>()).values()].sort((a, b) => a.name.localeCompare(b.name));
   const addContainer = async () => {
-    const next = code.trim();
-    if (!next || saving) return;
-    if (containers.some((item) => item.code.toLowerCase() === next.toLowerCase())) {
-      setToast('That container code is already on the list.');
+    if (saving) return;
+    if (!quantityOk) {
+      setToast(`Enter a quantity from 1 to ${CONTAINER_BATCH_LIMIT.toLocaleString('en-PH')}.`);
+      return;
+    }
+    const codes = buildContainerCodes(containers.map((item) => item.code), codePrefix, quantityCount);
+    const taken = new Set(containers.map((item) => item.code.trim().toLowerCase()));
+    if (codes.some((item) => taken.has(item.toLowerCase()))) {
+      setToast('Those codes are already on the list.');
       return;
     }
     setSaving(true);
-    const { data, error } = await supabase.from('station_containers').insert({ code: next }).select('id,code,created_at').maybeSingle();
+    const { data, error } = await supabase.from('station_containers').insert(codes.map((code) => ({ code }))).select('id,code,created_at');
     setSaving(false);
-    if (error || !data) {
-      setToast(/station_containers|schema cache/i.test(error?.message ?? '') ? 'Run the container SQL in Supabase so codes can be saved.' : /duplicate|unique/i.test(error?.message ?? '') ? 'That container code is already on the list.' : 'Container could not be saved.');
+    if (error || !data?.length) {
+      setToast(/station_containers|schema cache/i.test(error?.message ?? '') ? 'Run the container SQL in Supabase so codes can be saved.' : /duplicate|unique/i.test(error?.message ?? '') ? 'One of those codes is already on the list.' : 'Containers could not be saved.');
       return;
     }
-    const saved = data as StationContainer;
-    setContainers((current) => [...current, saved].sort((a, b) => a.code.localeCompare(b.code)));
-    setCode('');
-    setToast(`${saved.code} added.`);
+    const saved = (data as StationContainer[]).sort((a, b) => compareContainerCodes(a.code, b.code));
+    setContainers((current) => [...current, ...saved].sort((a, b) => compareContainerCodes(a.code, b.code)));
+    setQuantity('1');
+    setToast(saved.length === 1 ? `${saved[0].code} added.` : `Added ${saved[0].code} – ${saved[saved.length - 1].code}.`);
   };
   const markReturned = async (item: BorrowedContainer) => {
     if (returningId) return;
@@ -1203,47 +1276,62 @@ function ContainersView({ containers, setContainers, containersReady, customers,
     setPendingReturn(null);
     setToast(`${item.container_code} marked as returned.`);
   };
-  const askDelete = (item: StationContainer) => {
-    if (openFor(item.code)) {
-      setToast(`${item.code} is borrowed. Mark it returned before deleting.`);
+  const togglePicked = (id: string) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const toggleAllPicked = () => {
+    const ids = new Set(selectable.map((item) => item.id));
+    setSelectedIds((current) => allPicked ? current.filter((id) => !ids.has(id)) : [...new Set([...current, ...ids])]);
+  };
+  const askDelete = (items: StationContainer[]) => {
+    const ready = items.filter((item) => !openFor(item.code));
+    if (!ready.length) {
+      setToast('Mark borrowed containers as returned before deleting them.');
       return;
     }
-    setPendingDelete(item);
+    setPendingDelete(ready);
   };
   const removeContainer = async () => {
-    if (!pendingDelete || deletingId) return;
-    setDeletingId(pendingDelete.id);
-    const { error } = await supabase.from('station_containers').delete().eq('id', pendingDelete.id);
-    setDeletingId(null);
-    if (error) { setToast('Container could not be deleted.'); return; }
-    setContainers((current) => current.filter((row) => row.id !== pendingDelete.id));
-    setToast(`${pendingDelete.code} deleted.`);
+    if (!pendingDelete?.length || deleting) return;
+    const ids = pendingDelete.map((item) => item.id);
+    setDeleting(true);
+    const { error } = await supabase.from('station_containers').delete().in('id', ids);
+    setDeleting(false);
+    if (error) { setToast('Containers could not be deleted.'); return; }
+    setContainers((current) => current.filter((row) => !ids.includes(row.id)));
+    setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
+    setToast(pendingDelete.length === 1 ? `${pendingDelete[0].code} deleted.` : `${pendingDelete.length} containers deleted.`);
     setPendingDelete(null);
   };
   return <>
     <section className="panel table-panel">
       <div className="table-toolbar">
-        <div><h2>All containers</h2><p className="muted">{containers.length} code{containers.length === 1 ? '' : 's'}. These appear as suggestions when a customer borrows one at the POS.</p></div>
-        <div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code or customer" /></div>
+        <div><h2>All containers</h2><p className="muted">{containers.length} code{containers.length === 1 ? '' : 's'}. Each type and color has its own count, starting at 001. These appear as suggestions when a customer borrows one at the POS.</p></div>
+        <div className="container-toolbar-tools"><div className="segmented">{(['All', 'Available', 'Borrowed'] as const).map((item) => <button type="button" key={item} className={statusFilter === item ? 'selected' : ''} onClick={() => setStatusFilter(item)}>{item}</button>)}</div><div className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code or customer" /></div></div>
       </div>
       {!containersReady && <p className="customer-hint warn">Run the container SQL in Supabase before codes can be saved.</p>}
       <form className="container-add" onSubmit={(event) => { event.preventDefault(); void addContainer(); }}>
-        <label className="customer-field">Container code<input value={code} onChange={(event) => setCode(event.target.value)} placeholder="Enter container's code" /></label>
-        <button className="primary-button" type="submit" disabled={saving || !code.trim()}>{saving ? 'Adding...' : 'Add'}</button>
+        <div className="choice-field"><span>Container type</span><ChoiceDropdown open={openField === 'type'} onToggle={() => setOpenField((current) => current === 'type' ? null : 'type')} label={typeChoice.label} mark={<i className={`choice-shape ${typeChoice.letter === 'S' ? 'slim' : 'round'}`} />}>{containerTypes.map((item) => <button type="button" key={item.letter} className={containerType === item.letter ? 'selected' : ''} onClick={() => { setContainerType(item.letter); setOpenField(null); }}><i className={`choice-shape ${item.letter === 'S' ? 'slim' : 'round'}`} /><span>{item.label}</span><em>{item.letter}</em></button>)}</ChoiceDropdown></div>
+        <div className="choice-field"><span>Color</span><ChoiceDropdown open={openField === 'color'} onToggle={() => setOpenField((current) => current === 'color' ? null : 'color')} label={colorChoice.label} mark={<i className="choice-swatch" style={{ background: colorChoice.swatch }} />}>{containerColors.map((item) => <button type="button" key={item.letter} className={containerColor === item.letter ? 'selected' : ''} onClick={() => { setContainerColor(item.letter); setOpenField(null); }}><i className="choice-swatch" style={{ background: item.swatch }} /><span>{item.label}</span><em>{item.letter}</em></button>)}</ChoiceDropdown></div>
+        <label>Quantity<input value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" placeholder="1" /></label>
+        <button className="primary-button" type="submit" disabled={saving || !quantityOk}>{saving ? 'Adding...' : 'Add'}</button>
       </form>
+      {previewCodes.length > 0 && <div className="container-preview"><p><strong>{typeChoice.label} | {colorChoice.label} | {previewCodes.length}</strong>{previewCodes.length === 1 ? ` · ${previewCodes[0]}` : ` · ${previewCodes[0]} – ${previewCodes[previewCodes.length - 1]}`}</p>{previewCodes.length <= 8 && <div className="container-preview-codes">{previewCodes.map((item) => <span key={item}>{item}</span>)}</div>}</div>}
+      {pickedCount > 0 && <div className="container-select-bar"><span>{pickedCount} selected</span><button type="button" className="danger-button" onClick={() => askDelete(selectable.filter((item) => selectedIds.includes(item.id)))}><Trash2 size={14} /> Delete selected</button></div>}
       <div className="table-scroll">
-        <table className="stack-table">
-          <thead><tr><th>Code</th><th>Status</th><th /></tr></thead>
-          <tbody>{visibleContainers.length ? visibleContainers.map((item) => {
+        <table className="stack-table container-table">
+          <thead><tr><th className="pick-cell"><input ref={pickAllRef} className="container-check" type="checkbox" checked={allPicked} onChange={toggleAllPicked} disabled={!selectable.length} aria-label="Select all containers" /></th><th>Code</th><th>Status</th><th /></tr></thead>
+          <tbody>{listedContainers.length ? listedContainers.map((item) => {
             const open = openFor(item.code);
-            return <tr key={item.id}>
+            const picked = selectedIds.includes(item.id);
+            return <tr key={item.id} className={picked ? 'picked' : ''}>
+              <td className="pick-cell" data-label="Select"><input className="container-check" type="checkbox" checked={picked} disabled={!!open} onChange={() => togglePicked(item.id)} aria-label={`Select ${item.code}`} /></td>
               <td data-label="Code"><strong>{item.code}</strong></td>
               <td data-label="Status">{open ? <span className="status-pill borrowed">Borrowed · {customerName(open.customer_id)}</span> : <span className="status-pill">Available</span>}</td>
-              <td className="row-actions" data-label="Actions"><button type="button" className="text-danger" onClick={() => askDelete(item)}><Trash2 size={14} /> Delete</button></td>
+              <td className="row-actions" data-label="Actions"><button type="button" className="text-danger" onClick={() => askDelete([item])}><Trash2 size={14} /> Delete</button></td>
             </tr>;
-          }) : <tr><td colSpan={3}>{containers.length ? 'No containers match this search.' : 'No containers yet. Add a code above.'}</td></tr>}</tbody>
+          }) : <tr><td colSpan={4}>{containers.length ? `No ${statusFilter === 'All' ? '' : `${statusFilter.toLowerCase()} `}containers match this search.` : 'No containers yet. Choose a type, color, and quantity above.'}</td></tr>}</tbody>
         </table>
       </div>
+      {visibleContainers.length > 0 && <div className="container-more"><span>{shownCount} out of {visibleContainers.length}</span>{shownCount < visibleContainers.length && <button type="button" className="outline-button" onClick={() => setShown((count) => count + CONTAINER_PAGE)}>Show more</button>}</div>}
     </section>
     <section className="panel table-panel container-borrowed">
       <div className="table-toolbar">
@@ -1252,7 +1340,7 @@ function ContainersView({ containers, setContainers, containersReady, customers,
       {borrowedGroups.length ? <div className="borrow-groups">{(() => { const tones = ['green', 'blue', 'amber', 'teal', 'violet', 'rose']; let multi = 0; return borrowedGroups.map((group) => { const returnButton = (item: BorrowedContainer) => <button type="button" className="return-button" onClick={() => setPendingReturn(item)} disabled={returningId === item.id}>Mark as return</button>; if (group.items.length < 2) { const item = group.items[0]; return <div className="borrow-single" key={item.id}><strong>{item.container_code}</strong><span>{group.name}</span><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>; } const tone = tones[multi % tones.length]; multi += 1; return <section className={`borrow-group tone-${tone}`} key={group.items[0].customer_id}><h3>{group.name}<span>{group.items.length} containers</span></h3>{group.items.map((item) => <div className="borrow-group-row" key={item.id}><strong>{item.container_code}</strong><span>{shortDate(item.borrowed_at)}</span>{returnButton(item)}</div>)}</section>; }); })()}</div> : <div className="empty-state">{openBorrowed.length ? 'No borrowed containers match this search.' : 'No borrowed containers right now.'}</div>}
     </section>
     {pendingReturn && <div className="modal-backdrop" onClick={() => { if (!returningId) setPendingReturn(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><p className="eyebrow">RETURN CONTAINER</p><h2>Mark {pendingReturn.container_code} as returned?</h2><p className="muted">{customerName(pendingReturn.customer_id)} borrowed this container. It stays out until you confirm.</p><div className="modal-actions"><button type="button" className="danger-button" onClick={() => setPendingReturn(null)} disabled={!!returningId}>Cancel</button><button type="button" className="return-button" onClick={() => void markReturned(pendingReturn)} disabled={!!returningId}>{returningId ? 'Saving...' : 'Mark as return'}</button></div></div></div>}
-    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deletingId) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">DELETE CONTAINER</p><h2>Delete {pendingDelete.code}?</h2><p className="muted">It leaves the container list and will no longer appear as a POS suggestion.</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={!!deletingId}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeContainer()} disabled={!!deletingId}>{deletingId ? 'Deleting...' : 'Delete'}</button></div></div></div>}
+    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">DELETE CONTAINER</p><h2>Delete {pendingDelete.length === 1 ? pendingDelete[0].code : `${pendingDelete.length} containers`}?</h2><p className="muted">{pendingDelete.length === 1 ? 'It leaves the container list and will no longer appear as a POS suggestion.' : `${pendingDelete.slice(0, 8).map((item) => item.code).join(', ')}${pendingDelete.length > 8 ? ` and ${pendingDelete.length - 8} more` : ''} will leave the list.`}</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeContainer()} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button></div></div></div>}
   </>;
 }
 
