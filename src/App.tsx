@@ -1258,13 +1258,48 @@ function ContainersView({ containers, setContainers, containersReady, customers,
 
 const expenseCategories = ['Water Bill', 'Electric Bill', 'Internet', 'Gas', 'Foods', 'Others'];
 
+const expenseRanges: AnalyticsRange[] = ['Day', 'Week', 'Month', 'Year'];
+const expenseRangeLabel: Record<AnalyticsRange, string> = { Day: 'This day', Week: 'This week', Month: 'This month', Year: 'This year' };
+
 function ExpensesView({ expenses, setExpenses, setToast }: { expenses: Expense[]; setExpenses: (items: Expense[]) => void; setToast: (message: string) => void }) {
   const [category, setCategory] = useState(expenseCategories[0]);
   const [otherName, setOtherName] = useState('');
   const [notes, setNotes] = useState('');
   const [amount, setAmount] = useState('');
   const [expenseDate, setExpenseDate] = useState(dayKey(new Date()));
-  const addExpense = async () => {
+  const [range, setRange] = useState<AnalyticsRange>('Day');
+  const [anchorKey, setAnchorKey] = useState(dayKey(new Date()));
+  const [editing, setEditing] = useState<Expense | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Expense | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const period = periodFor(range, parseDayKey(anchorKey));
+  const startKey = dayKey(period.start);
+  const endKey = dayKey(period.end);
+  const visible = expenses.filter((expense) => {
+    const key = expense.expense_date.slice(0, 10);
+    return key >= startKey && key < endKey;
+  });
+  const total = visible.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  const sortExpenses = (items: Expense[]) => [...items].sort((a, b) => b.expense_date.localeCompare(a.expense_date) || a.id.localeCompare(b.id));
+  const resetForm = () => {
+    setEditing(null);
+    setCategory(expenseCategories[0]);
+    setOtherName('');
+    setNotes('');
+    setAmount('');
+    setExpenseDate(dayKey(new Date()));
+  };
+  const startEdit = (expense: Expense) => {
+    const known = expenseCategories.includes(expense.category);
+    setEditing(expense);
+    setCategory(known ? expense.category : 'Others');
+    setOtherName(expense.category === 'Others' || !known ? expense.title : '');
+    setNotes(expense.notes ?? '');
+    setAmount(String(Number(expense.amount)));
+    setExpenseDate(expense.expense_date.slice(0, 10));
+  };
+  const saveExpense = async () => {
     const value = Number(amount);
     if (!amount || !Number.isFinite(value) || value <= 0) {
       setToast('Enter an amount greater than zero.');
@@ -1280,19 +1315,69 @@ function ExpensesView({ expenses, setExpenses, setToast }: { expenses: Expense[]
       return;
     }
     const payload = { title: category === 'Others' ? customName : category, category, amount: value, expense_date: expenseDate, notes: notes.trim() || null };
-    const { data, error } = await supabase.from('station_expenses').insert(payload).select('id,title,category,amount,expense_date,notes').maybeSingle();
+    setSaving(true);
+    const query = editing
+      ? supabase.from('station_expenses').update(payload).eq('id', editing.id)
+      : supabase.from('station_expenses').insert(payload);
+    const { data, error } = await query.select('id,title,category,amount,expense_date,notes').maybeSingle();
+    setSaving(false);
     if (error || !data) {
-      setToast('Expense could not be saved.');
+      setToast(editing ? 'Expense could not be updated.' : 'Expense could not be saved.');
       return;
     }
-    setExpenses([data, ...expenses].sort((a, b) => b.expense_date.localeCompare(a.expense_date)));
-    setOtherName('');
-    setNotes('');
-    setAmount('');
-    setExpenseDate(dayKey(new Date()));
-    setToast('Expense added to your records.');
+    setExpenses(sortExpenses(editing ? expenses.map((item) => item.id === data.id ? data : item) : [data, ...expenses]));
+    resetForm();
+    setAnchorKey(expenseDate);
+    setRange('Day');
+    setToast(editing ? 'Expense updated.' : 'Expense added to your records.');
   };
-  return <div className="expenses-grid"><section className="panel expense-form"><p className="eyebrow">NEW EXPENSE</p><h2>Keep every peso accounted for.</h2><p className="muted">Log utilities, supplies, delivery, and other operating costs.</p><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>{category === 'Others' && <label>Expense name<input value={otherName} onChange={(event) => setOtherName(event.target.value)} placeholder="What is this expense?" /></label>}<label>Notes<input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional details" /></label><label>Amount<input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label><label>Date<input type="date" value={expenseDate} onChange={(event) => setExpenseDate(event.target.value)} /></label><button className="primary-button full" onClick={addExpense}><Plus size={17} /> Add expense</button></section><section className="panel table-panel"><PanelHeader title="Recent expenses" action="This month" /><div className="expense-list">{expenses.length ? expenses.map((expense) => { const detail = expense.notes || (expense.category !== expense.title ? expense.category : ''); return <div className="expense-row" key={expense.id}><div className="expense-icon"><Wallet size={17} /></div><div><strong>{expense.title}</strong><span>{detail ? `${detail} · ${shortDate(expense.expense_date)}` : shortDate(expense.expense_date)}</span></div><strong>{money(Number(expense.amount))}</strong></div>; }) : <div className="empty-state">No expenses recorded yet.</div>}</div></section></div>;
+  const removeExpense = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    const { error } = await supabase.from('station_expenses').delete().eq('id', pendingDelete.id);
+    setDeleting(false);
+    if (error) {
+      setToast('Expense could not be deleted.');
+      return;
+    }
+    setExpenses(expenses.filter((item) => item.id !== pendingDelete.id));
+    if (editing?.id === pendingDelete.id) resetForm();
+    setPendingDelete(null);
+    setToast('Expense deleted.');
+  };
+  return <>
+    <div className="expenses-grid">
+      <section className="panel expense-form">
+        <p className="eyebrow">{editing ? 'EDIT EXPENSE' : 'NEW EXPENSE'}</p>
+        <h2>{editing ? 'Update this expense.' : 'Keep every peso accounted for.'}</h2>
+        <p className="muted">{editing ? 'Change the details, then save. Cancel to leave it as it is.' : 'Log utilities, supplies, delivery, and other operating costs.'}</p>
+        <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>
+        {category === 'Others' && <label>Expense name<input value={otherName} onChange={(event) => setOtherName(event.target.value)} placeholder="What is this expense?" /></label>}
+        <label>Notes<input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional details" /></label>
+        <label>Amount<input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="₱ 0.00" /></label>
+        <label>Date<input type="date" value={expenseDate} onChange={(event) => setExpenseDate(event.target.value)} /></label>
+        <div className="expense-form-actions">
+          {editing && <button type="button" className="outline-button" onClick={resetForm} disabled={saving}>Cancel</button>}
+          <button className="primary-button" onClick={() => void saveExpense()} disabled={saving}><Plus size={17} /> {saving ? 'Saving...' : editing ? 'Save changes' : 'Add expense'}</button>
+        </div>
+      </section>
+      <section className="panel table-panel">
+        <div className="expense-toolbar">
+          <div className="expense-tools">
+            <div className="segmented analytics-range">{expenseRanges.map((item) => <button type="button" key={item} className={range === item ? 'selected' : ''} onClick={() => setRange(item)}>{expenseRangeLabel[item]}</button>)}</div>
+            <label className="analytics-date">Specific date<input type="date" value={anchorKey} onChange={(event) => { if (event.target.value) { setAnchorKey(event.target.value); setRange('Day'); } }} /></label>
+          </div>
+          <div className="expense-summary">
+            <p className="eyebrow">{expenseRangeLabel[range].toUpperCase()}</p>
+            <h2>{periodLabel(range, period.start, period.end)}</h2>
+            <p className="expense-total">{visible.length} {visible.length === 1 ? 'expense' : 'expenses'} · {money(total)}</p>
+          </div>
+        </div>
+        <div className="expense-list">{visible.length ? visible.map((expense) => { const detail = expense.notes || (expense.category !== expense.title ? expense.category : ''); return <div className={`expense-row${editing?.id === expense.id ? ' editing' : ''}`} key={expense.id}><div className="expense-icon"><Wallet size={17} /></div><div><strong>{expense.title}</strong><span>{detail ? `${detail} · ${shortDate(expense.expense_date)}` : shortDate(expense.expense_date)}</span></div><strong>{money(Number(expense.amount))}</strong><div className="expense-actions"><button type="button" className="outline-button" onClick={() => startEdit(expense)}><Pencil size={14} /> Edit</button><button type="button" className="text-danger" onClick={() => setPendingDelete(expense)}><Trash2 size={14} /> Delete</button></div></div>; }) : <div className="empty-state">No expenses for {expenseRangeLabel[range].toLowerCase()}.</div>}</div>
+      </section>
+    </div>
+    {pendingDelete && <div className="modal-backdrop" onClick={() => { if (!deleting) setPendingDelete(null); }}><div className="product-modal confirm-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon"><Trash2 size={22} /></div><p className="eyebrow">DELETE EXPENSE</p><h2>Delete {pendingDelete.title}?</h2><p className="muted">{money(Number(pendingDelete.amount))} on {shortDate(pendingDelete.expense_date)} will be removed from your records.</p><div className="modal-actions"><button type="button" className="outline-button" onClick={() => setPendingDelete(null)} disabled={deleting}>Cancel</button><button type="button" className="danger-button" onClick={() => void removeExpense()} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button></div></div></div>}
+  </>;
 }
 
 function SettingsView({ session, section, setSection, darkMode, setDarkMode, notify, setNotify, setToast }: { session: Session; section: SettingsSection; setSection: (section: SettingsSection) => void; darkMode: boolean; setDarkMode: (value: boolean) => void; notify: NotifyPrefs; setNotify: (patch: Partial<NotifyPrefs>) => void; setToast: (message: string) => void }) {
